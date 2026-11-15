@@ -3,12 +3,20 @@ name: Continuous Civilization Simulation & Training
 on:
   workflow_dispatch:
     inputs:
-      ticks:
-        description: 'Number of simulation ticks per batch'
+      duration_minutes:
+        description: 'مدة تشغيل المحاكاة بالدقائق (عند انتهائها يتوقف العمل ويحفظ آخر تطور ونقطة فحص)'
         required: false
-        default: '150'
+        default: '10'
+      checkpoint_interval_minutes:
+        description: 'الفاصل الزمني بالدقائق لإنشاء نسخة احتياطية Checkpoint تلقائياً أثناء التشغيل'
+        required: false
+        default: '3'
+      ticks:
+        description: 'الحد الأقصى للدورات (0 = التشغيل طوال مدة duration_minutes المحددة)'
+        required: false
+        default: '0'
       train_episodes:
-        description: 'Isolated training episodes per batch'
+        description: 'حلقات التدريب المعزول في نهاية الجلسة'
         required: false
         default: '10'
   schedule:
@@ -24,7 +32,7 @@ concurrency:
 jobs:
   resumable-simulation-batch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
@@ -34,10 +42,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps
+          fi
 
       - name: Restore persistent simulation state cache
         uses: actions/cache@v4
@@ -50,8 +62,13 @@ jobs:
       - name: Run simulation & engine verification tests
         run: npm test
 
-      - name: Run resumable simulation & isolated training batch
-        run: npx tsx scripts/cli-runner.ts --ticks=${{ github.event.inputs.ticks || '150' }} --train-episodes=${{ github.event.inputs.train_episodes || '10' }}
+      - name: Run time-budgeted simulation with periodic checkpoint backups
+        run: >
+          npx tsx scripts/cli-runner.ts
+          --duration-minutes=${{ github.event.inputs.duration_minutes || '10' }}
+          --checkpoint-interval-minutes=${{ github.event.inputs.checkpoint_interval_minutes || '3' }}
+          --ticks=${{ github.event.inputs.ticks || '0' }}
+          --train-episodes=${{ github.event.inputs.train_episodes || '10' }}
 
       - name: Upload compressed checkpoints and brain packages
         if: always()

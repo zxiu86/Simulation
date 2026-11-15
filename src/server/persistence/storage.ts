@@ -31,11 +31,9 @@ export class PersistenceManager {
   public sqliteReady = false;
 
   constructor(baseDir?: string) {
-    if (baseDir) {
-      this.initDirectories(baseDir);
-    } else {
-      this.initDirectories(DATA_DIR);
-    }
+    const resolved =
+      baseDir ?? (process.env.SIM_DATA_DIR ? path.resolve(process.env.SIM_DATA_DIR) : DATA_DIR);
+    this.initDirectories(resolved);
   }
 
   private rootDir = DATA_DIR;

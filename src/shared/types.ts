@@ -675,6 +675,19 @@ export interface TelemetrySnapshot {
     avgForgettingRate: number;
     strategyDiversity: number;
     rewardHackingFlags: number;
+    neuralNetworkDetails: {
+      architectureVersion: string;
+      inputSize: number;
+      hiddenSize: number;
+      outputSize: number;
+      parametersPerBrain: number;
+      activationFunction: string;
+      continualLearningMethod: string;
+      avgLoss: number;
+      avgTdError: number;
+      avgPolicyEntropy: number;
+      actionDistribution: Record<string, number>;
+    };
   };
 
   environment: {

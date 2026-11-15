@@ -1,12 +1,31 @@
 import React from 'react';
 import { X } from 'lucide-react';
-import type {
-  AgentState,
-  CivilizationKnowledgeItem,
-  CollectiveExperienceRecord,
-  GenerationSummary,
-  AgentSummaryView,
+import {
+  AGENT_ACTIONS,
+  type AgentActionType,
+  type AgentState,
+  type AgentSummaryView,
+  type CivilizationKnowledgeItem,
+  type CollectiveExperienceRecord,
+  type GenerationSummary,
 } from '../shared/types.ts';
+
+const ACTION_LABELS_AR: Record<AgentActionType, string> = {
+  explore: 'استكشاف',
+  forage_plant: 'جمع نباتات',
+  drink_water: 'شرب ماء',
+  hunt_prey: 'صيد',
+  observe_peer: 'مراقبة أقران',
+  cooperate_task: 'تعاون',
+  share_resource: 'مشاركة',
+  rest_sleep: 'راحة ونوم',
+  craft_attempt: 'تصنيع/بناء',
+  emit_signal: 'إصدار إشارة',
+  tend_child: 'رعاية صغار',
+  reconcile_or_bond: 'تواصل اجتماعي',
+  treat_ailment: 'علاج صحي',
+  move_sector: 'انتقال قطاعي',
+};
 
 const SKILL_LABELS_AR: Record<keyof AgentState['skills'], string> = {
   foraging: 'الجمع والتمييز النباتي',
@@ -148,6 +167,86 @@ export const AgentDetailModal: React.FC<{
                         </div>
                       </div>
                     ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Individual Neural Network Anatomy */}
+              <div className="border border-slate-800 rounded p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold text-slate-200">
+                    تشريح الشبكة العصبية المستقلة للفرد ({agent.brain.architectureVersion})
+                  </h3>
+                  <span className="text-xs font-mono-tabular text-cyan-400">
+                    {agent.brain.inputSize} → {agent.brain.hiddenSize} → {agent.brain.outputSize} (+Value)
+                  </span>
+                </div>
+
+                {(() => {
+                  const allW = [...agent.brain.w1, ...agent.brain.wPolicy, ...agent.brain.wValue];
+                  const minW = Math.min(...allW);
+                  const maxW = Math.max(...allW);
+                  const meanAbsW = allW.reduce((s, w) => s + Math.abs(w), 0) / Math.max(1, allW.length);
+                  const avgFisher =
+                    agent.brain.fisherImportance.reduce((s, f) => s + f, 0) /
+                    Math.max(1, agent.brain.fisherImportance.length);
+                  return (
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono-tabular">
+                      <div className="border border-slate-800 rounded p-2">
+                        <div className="text-slate-400 font-sans">عدد المعاملات</div>
+                        <div className="text-slate-100 mt-0.5">
+                          {allW.length + agent.brain.b1.length + agent.brain.bPolicy.length + 1}
+                        </div>
+                      </div>
+                      <div className="border border-slate-800 rounded p-2">
+                        <div className="text-slate-400 font-sans">متوسط الخسارة / TD</div>
+                        <div className="text-amber-300 mt-0.5">
+                          {agent.brain.avgLoss.toFixed(3)} / {agent.brain.avgTdError.toFixed(3)}
+                        </div>
+                      </div>
+                      <div className="border border-slate-800 rounded p-2">
+                        <div className="text-slate-400 font-sans">دقة التنبؤ / الإنتروبيا</div>
+                        <div className="text-emerald-400 mt-0.5">
+                          {(agent.brain.predictionAccuracy * 100).toFixed(0)}% / {(agent.brain.policyEntropy * 100).toFixed(0)}%
+                        </div>
+                      </div>
+                      <div className="border border-slate-800 rounded p-2">
+                        <div className="text-slate-400 font-sans">نطاق الأوزان (Min..Max)</div>
+                        <div className="text-slate-200 mt-0.5">
+                          {minW.toFixed(2)} .. {maxW.toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="border border-slate-800 rounded p-2">
+                        <div className="text-slate-400 font-sans">متوسط |W| / Fisher</div>
+                        <div className="text-cyan-300 mt-0.5">
+                          {meanAbsW.toFixed(3)} / {avgFisher.toFixed(3)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div>
+                  <div className="text-xs text-slate-400 mb-2">
+                    توزيع احتمالات طبقة السياسة الحالية (Softmax Output — تحديثات Replay: {agent.rlStats.replayUpdates}):
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                    {AGENT_ACTIONS.map((act, idx) => {
+                      const prob = agent.brain.lastActionProbabilities[idx] ?? 0;
+                      const pct = Math.round(prob * 100);
+                      return (
+                        <div key={act} className="flex items-center justify-between gap-2">
+                          <span className="text-slate-300 w-24 truncate">{ACTION_LABELS_AR[act]}</span>
+                          <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
+                            <div
+                              className="h-full bg-emerald-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="font-mono-tabular text-slate-300 w-9 text-left">{pct}%</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>

@@ -4,6 +4,7 @@ import {
   ENGINE_VERSION,
   GRID_SIZE,
   INITIAL_POPULATION,
+  NN_ARCHITECTURE_VERSION,
   SCHEMA_VERSION,
   type AgentActionType,
   type AgentState,
@@ -29,7 +30,9 @@ import { createAgent } from './agentFactory.ts';
 import { CollectiveMemorySystem } from './collectiveMemory.ts';
 import {
   forwardBrain,
+  HIDDEN_SIZE,
   INPUT_SIZE,
+  OUTPUT_SIZE,
   updateBrainActorCritic,
 } from './neuralBrain.ts';
 import { createInitialWorld, stepWorldEcology } from './world.ts';
@@ -2028,6 +2031,18 @@ export class CivilizationSimulationEngine {
     // Strategy diversity: distinct dominant last actions across alive agents / total actions
     const actionDist = new Set(alive.map((a) => a.lastAction).filter(Boolean));
     const strategyDiversity = Number((actionDist.size / AGENT_ACTIONS.length).toFixed(3));
+    const actionDistribution: Record<string, number> = {};
+    for (const act of AGENT_ACTIONS) actionDistribution[act] = 0;
+    for (const a of alive) {
+      if (a.lastAction) {
+        actionDistribution[a.lastAction] = (actionDistribution[a.lastAction] ?? 0) + 1;
+      }
+    }
+    const avgLoss = alive.reduce((s, a) => s + a.brain.avgLoss, 0) / nAlive;
+    const avgTdError = alive.reduce((s, a) => s + a.brain.avgTdError, 0) / nAlive;
+    const avgPolicyEntropy = alive.reduce((s, a) => s + a.brain.policyEntropy, 0) / nAlive;
+    const parametersPerBrain =
+      INPUT_SIZE * HIDDEN_SIZE + HIDDEN_SIZE + HIDDEN_SIZE * OUTPUT_SIZE + OUTPUT_SIZE + HIDDEN_SIZE + 1;
 
     // Social metrics
     let totalRels = 0;
@@ -2183,6 +2198,19 @@ export class CivilizationSimulationEngine {
         avgForgettingRate: Number((1 - avgRetention).toFixed(3)),
         strategyDiversity,
         rewardHackingFlags,
+        neuralNetworkDetails: {
+          architectureVersion: NN_ARCHITECTURE_VERSION,
+          inputSize: INPUT_SIZE,
+          hiddenSize: HIDDEN_SIZE,
+          outputSize: OUTPUT_SIZE,
+          parametersPerBrain,
+          activationFunction: 'tanh (مخفية) + Softmax (سياسة) + Value Critic',
+          continualLearningMethod: 'EWC Fisher Diagonal + Prioritized Experience Replay',
+          avgLoss: Number(avgLoss.toFixed(4)),
+          avgTdError: Number(avgTdError.toFixed(4)),
+          avgPolicyEntropy: Number(avgPolicyEntropy.toFixed(3)),
+          actionDistribution,
+        },
       },
 
       environment: {

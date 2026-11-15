@@ -1,6 +1,23 @@
 import React, { useState } from 'react';
-import type { TelemetrySnapshot } from '../shared/types.ts';
+import type { AgentActionType, TelemetrySnapshot } from '../shared/types.ts';
 import { TimeSeriesChart } from './ScientificCharts.tsx';
+
+const ACTION_AR: Record<AgentActionType, string> = {
+  explore: 'استكشاف',
+  forage_plant: 'جمع نباتات',
+  drink_water: 'شرب ماء',
+  hunt_prey: 'صيد',
+  observe_peer: 'مراقبة أقران',
+  cooperate_task: 'تعاون',
+  share_resource: 'مشاركة',
+  rest_sleep: 'راحة ونوم',
+  craft_attempt: 'تصنيع/بناء',
+  emit_signal: 'إصدار إشارة',
+  tend_child: 'رعاية صغار',
+  reconcile_or_bond: 'تواصل اجتماعي',
+  treat_ailment: 'علاج صحي',
+  move_sector: 'انتقال قطاعي',
+};
 
 export const MindsPanel: React.FC<{
   snapshot: TelemetrySnapshot;
@@ -8,12 +25,17 @@ export const MindsPanel: React.FC<{
   onSelectGeneration: (gen: number) => void;
 }> = ({ snapshot, onSelectAgent, onSelectGeneration }) => {
   const m = snapshot.mindsAndLearning;
+  const nn = m.neuralNetworkDetails;
   const aliveAgents = snapshot.agents.filter((a) => a.alive);
   const [agentAId, setAgentAId] = useState<string>(aliveAgents[0]?.id ?? '');
   const [agentBId, setAgentBId] = useState<string>(aliveAgents[1]?.id ?? '');
 
   const agentA = snapshot.agents.find((a) => a.id === agentAId) ?? aliveAgents[0];
   const agentB = snapshot.agents.find((a) => a.id === agentBId) ?? aliveAgents[1];
+  const totalActionsNow = Math.max(
+    1,
+    Object.values(nn.actionDistribution).reduce((a, b) => a + b, 0),
+  );
 
   return (
     <div className="space-y-6">
@@ -52,6 +74,98 @@ export const MindsPanel: React.FC<{
           </div>
           <div className="text-xs text-slate-500 mt-0.5 font-mono-tabular">
             التنوع: {(m.strategyDiversity * 100).toFixed(0)}% · إنذارات استغلال: {m.rewardHackingFlags}
+          </div>
+        </div>
+      </div>
+
+      {/* Neural Network Architecture & Live Telemetry */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">
+              تفاصيل معمارية الشبكة العصبية المستقلة لكل فرد
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5 font-mono-tabular">
+              {nn.architectureVersion} · {nn.parametersPerBrain} معامل مستقل / عقل
+            </p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-center text-xs border border-slate-800 rounded p-3 bg-[#0B111C]">
+            <div>
+              <div className="text-slate-400">طبقة الإدخال الحسي</div>
+              <div className="font-mono-tabular text-base font-semibold text-cyan-400 mt-1">
+                {nn.inputSize} عصبون
+              </div>
+              <div className="text-[11px] text-slate-500">فيزيولوجيا، بيئة، ذاكرة، ثقة</div>
+            </div>
+            <div className="border-x border-slate-800 px-2">
+              <div className="text-slate-400">الطبقة المخفية</div>
+              <div className="font-mono-tabular text-base font-semibold text-slate-100 mt-1">
+                {nn.hiddenSize} عصبون
+              </div>
+              <div className="text-[11px] text-slate-500">تفعيل tanh + EWC Anchor</div>
+            </div>
+            <div>
+              <div className="text-slate-400">مخرجات السياسة والقيمة</div>
+              <div className="font-mono-tabular text-base font-semibold text-emerald-400 mt-1">
+                {nn.outputSize} + 1
+              </div>
+              <div className="text-[11px] text-slate-500">Softmax Policy + V(s)</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+            <div className="border border-slate-800 rounded p-2.5">
+              <div className="text-slate-400">متوسط خسارة الشبكة</div>
+              <div className="font-mono-tabular text-slate-100 font-semibold mt-0.5">{nn.avgLoss}</div>
+            </div>
+            <div className="border border-slate-800 rounded p-2.5">
+              <div className="text-slate-400">متوسط خطأ TD-Error</div>
+              <div className="font-mono-tabular text-amber-300 font-semibold mt-0.5">{nn.avgTdError}</div>
+            </div>
+            <div className="border border-slate-800 rounded p-2.5">
+              <div className="text-slate-400">إنتروبيا الاستكشاف</div>
+              <div className="font-mono-tabular text-cyan-300 font-semibold mt-0.5">
+                {(nn.avgPolicyEntropy * 100).toFixed(1)}%
+              </div>
+            </div>
+          </div>
+
+          <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
+            <div>دوال التفعيل: <span className="text-slate-200">{nn.activationFunction}</span></div>
+            <div className="mt-1">التعلم المستمر: <span className="text-slate-200">{nn.continualLearningMethod}</span></div>
+          </div>
+        </div>
+
+        <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
+          <h3 className="text-sm font-semibold text-slate-100 mb-1">
+            توزيع مخرجات الشبكات العصبية الحية (الأفعال المختارة)
+          </h3>
+          <p className="text-xs text-slate-400 mb-3">
+            التوزيع الفعلي للقرارات الصادرة عن عقول الأفراد الأحياء في الدورة الحالية
+          </p>
+          <div className="space-y-1.5 text-xs max-h-56 overflow-y-auto pl-1">
+            {Object.entries(nn.actionDistribution)
+              .sort((a, b) => b[1] - a[1])
+              .map(([act, count]) => {
+                const pct = (count / totalActionsNow) * 100;
+                return (
+                  <div key={act} className="flex items-center justify-between gap-2">
+                    <span className="text-slate-300 w-28 truncate">
+                      {ACTION_AR[act as AgentActionType] ?? act}
+                    </span>
+                    <div className="flex-1 h-2 bg-slate-900 rounded overflow-hidden">
+                      <div
+                        className="h-full bg-cyan-500"
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                    </div>
+                    <span className="font-mono-tabular text-slate-400 w-16 text-left">
+                      {count} ({pct.toFixed(0)}%)
+                    </span>
+                  </div>
+                );
+              })}
           </div>
         </div>
       </div>
