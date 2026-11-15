@@ -1,0 +1,65 @@
+name: Continuous Civilization Simulation & Training
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticks:
+        description: 'Number of simulation ticks per batch'
+        required: false
+        default: '150'
+      train_episodes:
+        description: 'Isolated training episodes per batch'
+        required: false
+        default: '10'
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: civilization-simulation-state
+  cancel-in-progress: false
+
+jobs:
+  resumable-simulation-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore persistent simulation state cache
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: civ-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            civ-state-${{ github.ref_name }}-
+
+      - name: Run simulation & engine verification tests
+        run: npm test
+
+      - name: Run resumable simulation & isolated training batch
+        run: npx tsx scripts/cli-runner.ts --ticks=${{ github.event.inputs.ticks || '150' }} --train-episodes=${{ github.event.inputs.train_episodes || '10' }}
+
+      - name: Upload compressed checkpoints and brain packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: civilization-checkpoints-${{ github.run_number }}
+          path: |
+            data/checkpoints/*.json.gz
+            data/packages/*.json
+          retention-days: 14
+          if-no-files-found: warn
