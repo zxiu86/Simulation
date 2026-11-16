@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import {
   AGENT_ACTIONS,
   NN_ARCHITECTURE_VERSION,
@@ -6,6 +5,7 @@ import {
   type GeneticTraits,
   type NeuralBrainState,
 } from '../../shared/types.ts';
+import { computeCanonicalSha256 } from '../persistence/canonicalSerializer.ts';
 
 export const INPUT_SIZE = 24;
 export const HIDDEN_SIZE = 20;
@@ -87,12 +87,11 @@ export function createIndependentBrain(
   for (let i = 0; i < HIDDEN_SIZE * OUTPUT_SIZE; i++) {
     wPolicy.push((rng() * 2 - 1) * scale2);
   }
-  // Modulate slight genetic predisposition on exploration / social / caution biases without cloning
   const bPolicy: number[] = Array.from({ length: OUTPUT_SIZE }, (_, idx) => {
     const base = (rng() * 2 - 1) * 0.08;
-    if (idx === 0) return base + (genetics.curiosityBias - 0.5) * 0.25; // explore
+    if (idx === 0) return base + (genetics.curiosityBias - 0.5) * 0.25;
     if (idx === 4 || idx === 5 || idx === 6) return base + (genetics.sociabilityBias - 0.5) * 0.25;
-    if (idx === 3) return base + (genetics.riskTolerance - 0.5) * 0.2; // hunt
+    if (idx === 3) return base + (genetics.riskTolerance - 0.5) * 0.2;
     return base;
   });
 
@@ -113,6 +112,11 @@ export function createIndependentBrain(
     fisherImportance: new Array(totalParams).fill(0.01),
     anchorWeights: [...w1, ...wPolicy],
     trainingSteps: 0,
+    optimizerStep: 0,
+    currentLearningRate: 0.025,
+    momentumW1: new Array(w1.length).fill(0),
+    momentumWPolicy: new Array(wPolicy.length).fill(0),
+    momentumWValue: new Array(wValue.length).fill(0),
     avgLoss: 0,
     avgTdError: 0,
     predictionAccuracy: 0.5,
@@ -156,7 +160,7 @@ export function forwardBrain(
       sum += hidden[h] * brain.wPolicy[offset + h];
     }
     if (actionMask && !actionMask[o]) {
-      sum -= 12; // heavily discourage impossible actions without hardcoding rules
+      sum -= 12;
     }
     logits[o] = sum;
   }
@@ -170,7 +174,6 @@ export function forwardBrain(
   brain.lastActionProbabilities = probabilities;
   brain.policyEntropy = computeEntropy(probabilities);
 
-  // Sample action from policy distribution
   const r = rngFn();
   let cumulative = 0;
   let chosenIndex = OUTPUT_SIZE - 1;
@@ -182,7 +185,6 @@ export function forwardBrain(
     }
   }
 
-  // Extract causal reason from strongest input feature and policy confidence
   let topFeatureIdx = 0;
   let topFeatureImpact = -1;
   for (let i = 0; i < INPUT_SIZE; i++) {
@@ -213,6 +215,24 @@ export interface TrainStepMetrics {
   retentionDelta: number;
 }
 
+export function ensureBrainOptimizerBuffers(brain: NeuralBrainState): void {
+  if (!Array.isArray(brain.momentumW1) || brain.momentumW1.length !== brain.w1.length) {
+    brain.momentumW1 = new Array(brain.w1.length).fill(0);
+  }
+  if (!Array.isArray(brain.momentumWPolicy) || brain.momentumWPolicy.length !== brain.wPolicy.length) {
+    brain.momentumWPolicy = new Array(brain.wPolicy.length).fill(0);
+  }
+  if (!Array.isArray(brain.momentumWValue) || brain.momentumWValue.length !== brain.wValue.length) {
+    brain.momentumWValue = new Array(brain.wValue.length).fill(0);
+  }
+  if (typeof brain.optimizerStep !== 'number' || !Number.isFinite(brain.optimizerStep)) {
+    brain.optimizerStep = brain.trainingSteps || 0;
+  }
+  if (typeof brain.currentLearningRate !== 'number' || !Number.isFinite(brain.currentLearningRate)) {
+    brain.currentLearningRate = 0.025;
+  }
+}
+
 export function updateBrainActorCritic(
   brain: NeuralBrainState,
   stateVec: number[],
@@ -224,7 +244,16 @@ export function updateBrainActorCritic(
   gamma = 0.92,
   ewcLambda = 0.04,
 ): TrainStepMetrics {
-  // Current forward
+  ensureBrainOptimizerBuffers(brain);
+
+  const momentumBeta = 0.72;
+  const scheduledLr = clamp(
+    learningRate / (1 + brain.optimizerStep * 0.00025),
+    0.004,
+    0.05,
+  );
+  brain.currentLearningRate = Number(scheduledLr.toFixed(6));
+
   const curHidden = new Array<number>(HIDDEN_SIZE);
   for (let h = 0; h < HIDDEN_SIZE; h++) {
     let sum = brain.b1[h];
@@ -251,7 +280,6 @@ export function updateBrainActorCritic(
     curValue += curHidden[h] * brain.wValue[h];
   }
 
-  // Next state value
   let nextValue = 0;
   if (!done) {
     const nextHidden = new Array<number>(HIDDEN_SIZE);
@@ -275,26 +303,28 @@ export function updateBrainActorCritic(
   const policyLoss = -Math.log(Math.max(probs[chosenIndex], 1e-6)) * tdError;
   const totalLoss = criticLoss + Math.abs(policyLoss);
 
-  // Gradients: Policy gradient + Value critic gradient + EWC continual learning anchor
   const dHidden = new Array<number>(HIDDEN_SIZE).fill(0);
   const w1Len = brain.w1.length;
 
-  // Update Policy head
   for (let o = 0; o < OUTPUT_SIZE; o++) {
     const gradLogit = (o === chosenIndex ? 1 : 0) - probs[o];
     const advantageGrad = clamp(gradLogit * tdError, -2, 2);
-    brain.bPolicy[o] = clamp(brain.bPolicy[o] + learningRate * advantageGrad, -4, 4);
+    brain.bPolicy[o] = clamp(brain.bPolicy[o] + scheduledLr * advantageGrad, -4, 4);
     const offset = o * HIDDEN_SIZE;
     for (let h = 0; h < HIDDEN_SIZE; h++) {
-      const idx = w1Len + offset + h;
+      const pIdx = offset + h;
+      const idx = w1Len + pIdx;
       const ewcPenalty =
         ewcLambda *
         brain.fisherImportance[idx] *
-        (brain.wPolicy[offset + h] - brain.anchorWeights[idx]);
+        (brain.wPolicy[pIdx] - brain.anchorWeights[idx]);
       const gradW = advantageGrad * curHidden[h] - ewcPenalty;
-      dHidden[h] += advantageGrad * brain.wPolicy[offset + h];
-      brain.wPolicy[offset + h] = clamp(brain.wPolicy[offset + h] + learningRate * gradW, -4, 4);
-      // Update Fisher diagonal online
+      dHidden[h] += advantageGrad * brain.wPolicy[pIdx];
+
+      const vel = momentumBeta * brain.momentumWPolicy[pIdx] + (1 - momentumBeta) * gradW;
+      brain.momentumWPolicy[pIdx] = vel;
+      brain.wPolicy[pIdx] = clamp(brain.wPolicy[pIdx] + scheduledLr * vel, -4, 4);
+
       brain.fisherImportance[idx] = clamp(
         brain.fisherImportance[idx] * 0.995 + 0.005 * (gradW * gradW),
         0.005,
@@ -303,19 +333,20 @@ export function updateBrainActorCritic(
     }
   }
 
-  // Update Value head
-  brain.bValue = clamp(brain.bValue + learningRate * tdError * 0.5, -10, 10);
+  brain.bValue = clamp(brain.bValue + scheduledLr * tdError * 0.5, -10, 10);
   for (let h = 0; h < HIDDEN_SIZE; h++) {
     const gradV = tdError * curHidden[h];
     dHidden[h] += tdError * brain.wValue[h] * 0.5;
-    brain.wValue[h] = clamp(brain.wValue[h] + learningRate * 0.5 * gradV, -4, 4);
+
+    const velV = momentumBeta * brain.momentumWValue[h] + (1 - momentumBeta) * gradV;
+    brain.momentumWValue[h] = velV;
+    brain.wValue[h] = clamp(brain.wValue[h] + scheduledLr * 0.5 * velV, -4, 4);
   }
 
-  // Backprop through hidden layer with EWC protection against catastrophic forgetting
   let driftSum = 0;
   for (let h = 0; h < HIDDEN_SIZE; h++) {
     const dtanh = (1 - curHidden[h] * curHidden[h]) * clamp(dHidden[h], -2, 2);
-    brain.b1[h] = clamp(brain.b1[h] + learningRate * 0.5 * dtanh, -3, 3);
+    brain.b1[h] = clamp(brain.b1[h] + scheduledLr * 0.5 * dtanh, -3, 3);
     const offset = h * INPUT_SIZE;
     for (let i = 0; i < INPUT_SIZE; i++) {
       const idx = offset + i;
@@ -323,7 +354,11 @@ export function updateBrainActorCritic(
       driftSum += Math.abs(anchorDiff);
       const ewcPenalty = ewcLambda * brain.fisherImportance[idx] * anchorDiff;
       const grad = dtanh * stateVec[i] - ewcPenalty;
-      brain.w1[idx] = clamp(brain.w1[idx] + learningRate * 0.5 * grad, -3, 3);
+
+      const vel1 = momentumBeta * brain.momentumW1[idx] + (1 - momentumBeta) * grad;
+      brain.momentumW1[idx] = vel1;
+      brain.w1[idx] = clamp(brain.w1[idx] + scheduledLr * 0.5 * vel1, -3, 3);
+
       brain.fisherImportance[idx] = clamp(
         brain.fisherImportance[idx] * 0.995 + 0.005 * (grad * grad),
         0.005,
@@ -332,7 +367,6 @@ export function updateBrainActorCritic(
     }
   }
 
-  // Slowly consolidate anchor when TD error is small (stable mastered skill)
   if (Math.abs(tdError) < 0.35) {
     for (let i = 0; i < brain.w1.length; i++) {
       brain.anchorWeights[i] = brain.anchorWeights[i] * 0.99 + brain.w1[i] * 0.01;
@@ -344,6 +378,7 @@ export function updateBrainActorCritic(
   }
 
   brain.trainingSteps += 1;
+  brain.optimizerStep += 1;
   brain.avgLoss = brain.avgLoss * 0.95 + totalLoss * 0.05;
   brain.avgTdError = brain.avgTdError * 0.95 + Math.abs(tdError) * 0.05;
   const accuratePrediction = Math.abs(tdError) < 0.8 ? 1 : 0;
@@ -356,7 +391,7 @@ export function updateBrainActorCritic(
 }
 
 export function computeBrainIntegrityHash(brain: NeuralBrainState): string {
-  const payload = JSON.stringify({
+  const { sha256 } = computeCanonicalSha256({
     architectureVersion: brain.architectureVersion,
     inputSize: brain.inputSize,
     hiddenSize: brain.hiddenSize,
@@ -368,7 +403,7 @@ export function computeBrainIntegrityHash(brain: NeuralBrainState): string {
     wValue: brain.wValue.map((n) => Number(n.toFixed(6))),
     bValue: Number(brain.bValue.toFixed(6)),
   });
-  return crypto.createHash('sha256').update(payload).digest('hex');
+  return sha256;
 }
 
 export function validateBrainStructure(brain: NeuralBrainState): {
@@ -400,7 +435,14 @@ export function validateBrainStructure(brain: NeuralBrainState): {
     return { valid: false, reason: 'مصفوفات الأوزان العصبية ناقصة أو تالفة' };
   }
 
-  const allWeights = [...brain.w1, ...brain.b1, ...brain.wPolicy, ...brain.bPolicy, ...brain.wValue, brain.bValue];
+  const allWeights = [
+    ...brain.w1,
+    ...brain.b1,
+    ...brain.wPolicy,
+    ...brain.bPolicy,
+    ...brain.wValue,
+    brain.bValue,
+  ];
   for (const w of allWeights) {
     if (typeof w !== 'number' || !Number.isFinite(w)) {
       return { valid: false, reason: 'تم رصد قيم غير رقمية (NaN/Infinity) في الأوزان العصبية' };

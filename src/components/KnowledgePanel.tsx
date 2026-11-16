@@ -1,240 +1,162 @@
 import React, { useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
-import type { CertaintyStatus, KnowledgeCategory, TelemetrySnapshot } from '../shared/types.ts';
+import { BookOpen, FlaskConical, Search } from 'lucide-react';
+import type { TelemetrySnapshot } from '../shared/types.ts';
 
-const CATEGORY_AR: Record<KnowledgeCategory, string> = {
-  food_plant: 'نباتات ومصادر طعام',
-  water_source: 'مصادر مياه',
-  animal: 'حيوانات',
-  hunting_method: 'أساليب صيد',
-  tool: 'أدوات بدائية',
-  cooperation: 'تعاون ومجتمع',
-  signal_vocabulary: 'إشارات ومفردات',
-  preservation: 'طرق تخزين وحفظ',
-  shelter: 'ملاجئ وبناء',
-  health_remedy: 'علاج وصحة',
-  proto_agriculture: 'رعاية نباتات (زراعة أولية)',
+const CERTAINTY_AR: Record<string, { label: string; cls: string }> = {
+  confirmed: { label: 'مؤكد تجريبياً', cls: 'text-emerald-300 border-emerald-700/60 bg-emerald-950/30' },
+  unconfirmed: { label: 'قيد التحقق', cls: 'text-amber-300 border-amber-700/60 bg-amber-950/30' },
+  disproven: { label: 'مرفوض / ضار', cls: 'text-rose-300 border-rose-700/60 bg-rose-950/30' },
 };
 
-const CERTAINTY_AR: Record<CertaintyStatus, { label: string; cls: string }> = {
-  confirmed: { label: 'مؤكدة تجريبياً', cls: 'text-emerald-400' },
-  unconfirmed: { label: 'غير مؤكدة / قيد الاختبار', cls: 'text-amber-400' },
-  disproven: { label: 'فشلت / خطرة', cls: 'text-rose-400' },
-};
-
-export const KnowledgePanel: React.FC<{
-  snapshot: TelemetrySnapshot;
-}> = ({ snapshot }) => {
-  const [certaintyFilter, setCertaintyFilter] = useState<string>('all');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+export function KnowledgePanel({ snapshot }: { snapshot: TelemetrySnapshot }) {
   const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [certaintyFilter, setCertaintyFilter] = useState('all');
 
   const filteredKnowledge = useMemo(() => {
     const q = search.trim().toLowerCase();
     return snapshot.knowledgeItems.filter((k) => {
-      if (certaintyFilter !== 'all' && k.certaintyStatus !== certaintyFilter) return false;
       if (categoryFilter !== 'all' && k.category !== categoryFilter) return false;
-      if (
-        q &&
-        !k.titleAr.toLowerCase().includes(q) &&
-        !k.summaryAr.toLowerCase().includes(q) &&
-        !k.entityKey.toLowerCase().includes(q)
-      ) {
-        return false;
+      if (certaintyFilter !== 'all' && k.certaintyStatus !== certaintyFilter) return false;
+      if (q) {
+        return (
+          k.titleAr.toLowerCase().includes(q) ||
+          k.summaryAr.toLowerCase().includes(q) ||
+          k.entityKey.toLowerCase().includes(q)
+        );
       }
       return true;
     });
-  }, [snapshot.knowledgeItems, certaintyFilter, categoryFilter, search]);
-
-  const confirmedCount = snapshot.knowledgeItems.filter((k) => k.certaintyStatus === 'confirmed').length;
-  const unconfirmedCount = snapshot.knowledgeItems.filter((k) => k.certaintyStatus === 'unconfirmed').length;
-  const disprovenCount = snapshot.knowledgeItems.filter((k) => k.certaintyStatus === 'disproven').length;
+  }, [snapshot.knowledgeItems, search, categoryFilter, certaintyFilter]);
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-[#0F1623] border border-slate-800 rounded-md p-3.5">
-          <div className="text-xs text-slate-400">إجمالي المعارف المكتشفة</div>
-          <div className="text-xl font-semibold font-mono-tabular text-slate-100 mt-1">
-            {snapshot.knowledgeItems.length}
+    <div className="space-y-4">
+      <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <BookOpen className="w-4 h-4 text-amber-400" />
+            <span>سجل المعرفة التراكمية عبر الأجيال ({filteredKnowledge.length})</span>
           </div>
-        </div>
-        <div className="bg-[#0F1623] border border-slate-800 rounded-md p-3.5">
-          <div className="text-xs text-slate-400">معلومات مؤكدة</div>
-          <div className="text-xl font-semibold font-mono-tabular text-emerald-400 mt-1">
-            {confirmedCount}
-          </div>
-        </div>
-        <div className="bg-[#0F1623] border border-slate-800 rounded-md p-3.5">
-          <div className="text-xs text-slate-400">غير مؤكدة (تحتاج تكراراً)</div>
-          <div className="text-xl font-semibold font-mono-tabular text-amber-400 mt-1">
-            {unconfirmedCount}
-          </div>
-        </div>
-        <div className="bg-[#0F1623] border border-slate-800 rounded-md p-3.5">
-          <div className="text-xs text-slate-400">فشلت / خطرة</div>
-          <div className="text-xl font-semibold font-mono-tabular text-rose-400 mt-1">
-            {disprovenCount}
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h3 className="text-sm font-semibold text-slate-100">
-            سجل المعرفة المشتركة للحضارة ({filteredKnowledge.length})
-          </h3>
-
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5">
-              {[
-                { id: 'all', label: 'الكل' },
-                { id: 'confirmed', label: 'مؤكدة' },
-                { id: 'unconfirmed', label: 'غير مؤكدة' },
-                { id: 'disproven', label: 'فاشلة' },
-              ].map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setCertaintyFilter(t.id)}
-                  className={`px-2.5 py-1 rounded cursor-pointer ${
-                    certaintyFilter === t.id
-                      ? 'bg-cyan-500/20 text-cyan-300'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="بحث في المعارف..."
+                className="bg-[#070B12] border border-slate-700 rounded pr-8 pl-2.5 py-1 text-slate-100 placeholder:text-slate-500"
+              />
             </div>
-
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200"
+              className="bg-[#070B12] border border-slate-700 rounded px-2 py-1 text-slate-200"
             >
-              <option value="all">كل التصنيفات</option>
-              {Object.entries(CATEGORY_AR).map(([k, label]) => (
-                <option key={k} value={k}>
-                  {label}
-                </option>
-              ))}
+              <option value="all">كل الفئات</option>
+              <option value="food_plant">النباتات الغذائية</option>
+              <option value="water_source">مصادر المياه</option>
+              <option value="hunting_method">أساليب الصيد</option>
+              <option value="tool">الأدوات والابتكار</option>
+              <option value="shelter">المأوى</option>
+              <option value="cooperation">التعاون الاجتماعي</option>
+              <option value="signal_vocabulary">الإشارات واللغة</option>
+              <option value="proto_agriculture">الزراعة الأولية</option>
+              <option value="health_remedy">العناية الصحية</option>
             </select>
-
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-2.5" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="بحث في المعارف…"
-                className="bg-slate-900 border border-slate-800 rounded pr-8 pl-3 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500"
-              />
-            </div>
+            <select
+              value={certaintyFilter}
+              onChange={(e) => setCertaintyFilter(e.target.value)}
+              className="bg-[#070B12] border border-slate-700 rounded px-2 py-1 text-slate-200"
+            >
+              <option value="all">كل حالات اليقين</option>
+              <option value="confirmed">مؤكد تجريبياً</option>
+              <option value="unconfirmed">قيد التحقق</option>
+              <option value="disproven">مرفوض / ضار</option>
+            </select>
           </div>
         </div>
 
-        <div className="overflow-x-auto max-h-[380px]">
-          <table className="w-full text-right text-xs border-collapse">
-            <thead className="sticky top-0 bg-[#0B111C] text-slate-400 border-b border-slate-800">
-              <tr>
-                <th className="py-2.5 px-2">المعرفة / العنصر</th>
-                <th className="py-2.5 px-2">التصنيف</th>
-                <th className="py-2.5 px-2">المكتشف / الجيل</th>
-                <th className="py-2.5 px-2">التجارب (نجاح / فشل)</th>
-                <th className="py-2.5 px-2">مجربون مستقلون</th>
-                <th className="py-2.5 px-2">مستوى الثقة</th>
-                <th className="py-2.5 px-2">الحالة والنشاط</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {filteredKnowledge.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-500">
-                    لا توجد معارف مطابقة للمرشحات الحالية بعد.
-                  </td>
-                </tr>
-              ) : (
-                filteredKnowledge.map((k) => {
-                  const cert = CERTAINTY_AR[k.certaintyStatus];
-                  return (
-                    <tr key={k.id} className="hover:bg-slate-800/30">
-                      <td className="py-2.5 px-2">
-                        <div className="font-medium text-slate-100">{k.titleAr}</div>
-                        <div className="text-slate-400 mt-0.5 max-w-md truncate">{k.summaryAr}</div>
-                      </td>
-                      <td className="py-2.5 px-2 text-slate-300 whitespace-nowrap">
-                        {CATEGORY_AR[k.category]}
-                      </td>
-                      <td className="py-2.5 px-2 font-mono-tabular text-slate-400 whitespace-nowrap">
-                        دورة {k.discoveredAtTick} · جيل {k.discovererGeneration}
-                      </td>
-                      <td className="py-2.5 px-2 font-mono-tabular whitespace-nowrap">
-                        <span className="text-slate-200">{k.totalTrials}</span> (
-                        <span className="text-emerald-400">{k.successCount}</span> /{' '}
-                        <span className="text-rose-400">{k.failureCount}</span>)
-                      </td>
-                      <td className="py-2.5 px-2 font-mono-tabular text-slate-300">
-                        {k.uniqueExperimenters} أفراد
-                      </td>
-                      <td className="py-2.5 px-2 font-mono-tabular">
-                        <span className={cert.cls}>{(k.confidence * 100).toFixed(0)}%</span>
-                      </td>
-                      <td className="py-2.5 px-2 text-xs whitespace-nowrap">
-                        <div className={cert.cls}>{cert.label}</div>
-                        <div className="text-slate-500 font-mono-tabular">
-                          آخر اختبار: {k.lastTestedTick} · {k.stillActive ? 'مستخدمة حالياً' : 'مهجورة'}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+          {filteredKnowledge.map((k) => {
+            const cert = CERTAINTY_AR[k.certaintyStatus] ?? CERTAINTY_AR.unconfirmed;
+            return (
+              <div
+                key={k.id}
+                className="bg-[#070B12] border border-slate-800/90 rounded p-3 space-y-1.5 text-xs"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-semibold text-slate-100">{k.titleAr}</div>
+                  <span className={`px-1.5 py-0.5 rounded border text-[10px] shrink-0 ${cert.cls}`}>
+                    {cert.label}
+                  </span>
+                </div>
+                <div className="text-slate-400 text-[11px]">{k.summaryAr}</div>
+                <div className="flex flex-wrap items-center justify-between gap-1 pt-1 border-t border-slate-800/70 text-[11px] font-mono tabular-nums text-slate-300">
+                  <span>ثقة: {(k.confidence * 100).toFixed(0)}%</span>
+                  <span>
+                    تجارب: {k.totalTrials} ({k.uniqueExperimenters} مجرّب)
+                  </span>
+                  <span>
+                    ✓{k.successCount} / ✗{k.failureCount}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  اكتُشف في الجيل {k.discovererGeneration} · T{k.discoveredAtTick} ·{' '}
+                  {k.stillActive ? 'مستخدم حالياً' : 'غير نشط مؤخراً'}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Recent Collective Experience Records */}
-      <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
-        <h3 className="text-sm font-semibold text-slate-100 mb-3">
-          أحدث سجلات التجارب الفردية التفصيلية ({snapshot.recentExperiences.length})
-        </h3>
-        <div className="overflow-x-auto max-h-80">
-          <table className="w-full text-right text-xs border-collapse">
-            <thead className="sticky top-0 bg-[#0B111C] text-slate-400 border-b border-slate-800">
+      {/* Collective Experiences Log */}
+      <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+        <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+          <FlaskConical className="w-4 h-4 text-cyan-400" />
+          <span>أحدث التجارب الحقلية في قاعدة التعلم الجماعي ({snapshot.recentExperiences.length})</span>
+        </div>
+        <div className="overflow-x-auto max-h-96 overflow-y-auto border border-slate-800 rounded">
+          <table className="w-full text-xs text-right">
+            <thead className="bg-[#070B12] text-slate-400 sticky top-0">
               <tr>
-                <th className="py-2 px-2">الدورة / المكان</th>
-                <th className="py-2 px-2">المنفذ / الجيل</th>
-                <th className="py-2 px-2">الفعل والسبب</th>
-                <th className="py-2 px-2">النتيجة المباشرة والمتأخرة</th>
-                <th className="py-2 px-2">المكافأة / الضرر</th>
+                <th className="p-2">الدورة</th>
+                <th className="p-2">الكيان / القطاع</th>
+                <th className="p-2">النتيجة المباشرة والمؤجلة</th>
+                <th className="p-2">الظروف</th>
+                <th className="p-2">المكافأة</th>
+                <th className="p-2">الموثوقية</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {snapshot.recentExperiences.slice(0, 40).map((exp) => (
-                <tr key={exp.id}>
-                  <td className="py-2 px-2 font-mono-tabular text-slate-400 whitespace-nowrap">
-                    {exp.simTimeTick} · ({exp.sectorKey})
+            <tbody className="divide-y divide-slate-800/70">
+              {snapshot.recentExperiences.map((ex) => (
+                <tr key={ex.id} className="hover:bg-slate-800/30">
+                  <td className="p-2 font-mono tabular-nums text-slate-400">
+                    T{ex.simTimeTick} (G{ex.generation})
                   </td>
-                  <td className="py-2 px-2 font-mono-tabular text-slate-300 whitespace-nowrap">
-                    {exp.agentId.slice(0, 12)} · جيل {exp.generation}
+                  <td className="p-2 font-mono text-cyan-300">
+                    {ex.entityKey} · ({ex.sectorKey})
                   </td>
-                  <td className="py-2 px-2">
-                    <div className="text-cyan-300">{exp.chosenAction}</div>
-                    <div className="text-slate-500">{exp.actionReason}</div>
-                  </td>
-                  <td className="py-2 px-2">
-                    <div className="text-slate-200">{exp.immediateOutcome}</div>
-                    {exp.delayedOutcomes.length > 0 && (
-                      <div className="text-rose-400 mt-0.5">{exp.delayedOutcomes.join('؛ ')}</div>
+                  <td className="p-2 text-slate-200">
+                    <div>{ex.immediateOutcome}</div>
+                    {ex.delayedOutcomes.length > 0 && (
+                      <div className="text-[11px] text-rose-300 mt-0.5">
+                        أثر مؤجل: {ex.delayedOutcomes.join('؛ ')}
+                      </div>
                     )}
                   </td>
-                  <td className="py-2 px-2 font-mono-tabular whitespace-nowrap">
-                    <span className={exp.reward >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                      {exp.reward}
-                    </span>
-                    {exp.damages > 0 && <span className="text-rose-400"> (ضرر {exp.damages})</span>}
+                  <td className="p-2 text-[11px] text-slate-400">
+                    {ex.environmentalConditions.biome} / {ex.environmentalConditions.season}
+                  </td>
+                  <td
+                    className={`p-2 font-mono tabular-nums ${
+                      ex.reward >= 0 ? 'text-emerald-300' : 'text-rose-400'
+                    }`}
+                  >
+                    {ex.reward >= 0 ? `+${ex.reward}` : ex.reward}
+                  </td>
+                  <td className="p-2 font-mono tabular-nums">
+                    {(ex.reliabilityScore * 100).toFixed(0)}%
                   </td>
                 </tr>
               ))}
@@ -244,4 +166,4 @@ export const KnowledgePanel: React.FC<{
       </div>
     </div>
   );
-};
+}

@@ -1,244 +1,356 @@
-import React from 'react';
-import { Play, Pause, StepForward, Save, RotateCcw } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  Activity,
+  BrainCircuit,
+  Cpu,
+  Database,
+  HardDrive,
+  HeartPulse,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
 import type { TelemetrySnapshot } from '../shared/types.ts';
-import { TimeSeriesChart } from './ScientificCharts.tsx';
+import { HorizontalDistributionBars, TimeSeriesChart } from './ScientificCharts.tsx';
 
-const RISK_LABEL_AR: Record<TelemetrySnapshot['survivalAndExtinction']['riskLevel'], { text: string; cls: string }> = {
-  stable: { text: 'استقرار السكان', cls: 'text-emerald-400' },
-  decline: { text: 'انخفاض السكان', cls: 'text-amber-400' },
-  critical: { text: 'حالة حرجة', cls: 'text-rose-400' },
-  near_extinction: { text: 'شبه انقراض', cls: 'text-rose-400' },
-  total_extinction: { text: 'انقراض كلي — قيد الاستعادة', cls: 'text-rose-500' },
-};
-
-const TRAINING_STATUS_AR: Record<TelemetrySnapshot['training']['status'], string> = {
-  idle: 'متوقف (خامل)',
-  running: 'قيد التدريب المعزول',
-  completed: 'مكتمل',
-  failed: 'فشل',
-  stopped: 'أُوقف يدوياً',
-};
-
-export const OverviewPanel: React.FC<{
+export function OverviewPanel({
+  snapshot,
+  onSaveCheckpoint,
+  onRestoreCheckpoint,
+  onVerifyCheckpoint,
+}: {
   snapshot: TelemetrySnapshot;
-  onSimControl: (action: string, payload?: Record<string, unknown>) => void;
-  onSaveCheckpoint: () => void;
-}> = ({ snapshot, onSimControl, onSaveCheckpoint }) => {
-  const risk = RISK_LABEL_AR[snapshot.survivalAndExtinction.riskLevel];
-  const minds = snapshot.mindsAndLearning;
-  const pop = snapshot.population;
+  onSaveCheckpoint: () => Promise<void>;
+  onRestoreCheckpoint: (checkpointId?: string) => Promise<void>;
+  onVerifyCheckpoint: (checkpointId: string) => Promise<{ valid: boolean; reasonAr: string }>;
+}) {
+  const [verifyMsg, setVerifyMsg] = useState<{ id: string; valid: boolean; msg: string } | null>(
+    null,
+  );
+  const [busyAction, setBusyAction] = useState(false);
 
-  const statItems = [
-    {
-      label: 'السكان الأحياء / المتوفون',
-      value: `${pop.alive} / ${pop.deceased}`,
-      sub: `المواليد: ${pop.births} · الأجيال: ${snapshot.currentGeneration}`,
-    },
-    {
-      label: 'الزمن الافتراضي والحقيقي',
-      value: `${snapshot.tick} دورة`,
-      sub: `${snapshot.worldDays} يوم افتراضي · ${snapshot.elapsedRealSeconds} ث`,
-    },
-    {
-      label: 'إجمالي التجارب والقرارات',
-      value: `${minds.totalExperiencesRecorded.toLocaleString()}`,
-      sub: `قرارات: ${minds.totalDecisions.toLocaleString()} · مسترجعة: ${minds.totalExperiencesReplayed}`,
-    },
-    {
-      label: 'متوسط الأداء والمكافأة',
-      value: `${minds.avgReward}`,
-      sub: `نجاح الأفعال: ${(minds.actionSuccessRate * 100).toFixed(1)}% · فشل: ${(minds.actionFailureRate * 100).toFixed(1)}%`,
-    },
-    {
-      label: 'الاحتفاظ بالمهارات والشبكات',
-      value: `${(minds.avgRetentionScore * 100).toFixed(1)}%`,
-      sub: `عقول نشطة: ${minds.activeBrains} · نسيان: ${(minds.avgForgettingRate * 100).toFixed(1)}%`,
-    },
-    {
-      label: 'المعارف المشتركة واللغة',
-      value: `${snapshot.knowledgeItems.length} معرفة`,
-      sub: `مؤكدة: ${snapshot.knowledgeItems.filter((k) => k.certaintyStatus === 'confirmed').length} · رموز تواصل: ${snapshot.societyAndLanguage.signalsCount}`,
-    },
-  ];
+  const actionDistItems = Object.entries(
+    snapshot.mindsAndLearning.neuralNetworkDetails.actionDistribution,
+  )
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 7)
+    .map(([act, count]) => ({ label: act, value: count }));
 
   return (
-    <div className="space-y-6">
-      {/* Control Strip */}
-      <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="text-xs text-slate-400">
-            حالة المحاكاة:{' '}
-            <span className={snapshot.simStatus === 'running' ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-              {snapshot.simStatus === 'running'
-                ? 'تعمل الآن'
-                : snapshot.simStatus === 'recovering'
-                  ? 'قيد الاستعادة من الانقراض'
-                  : 'متوقفة مؤقتاً'}
-            </span>
-            {' · '}
-            حالة التدريب المعزول:{' '}
-            <span className="text-slate-200">{TRAINING_STATUS_AR[snapshot.training.status]}</span>
-            {' · '}
-            خطر الانقراض: <span className={risk.cls}>{risk.text}</span>
+    <div className="space-y-4">
+      {/* Top 4 KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>السكان الأحياء / الكلي</span>
+            <Activity className="w-4 h-4 text-emerald-400" />
           </div>
-          <div className="text-xs font-mono-tabular text-slate-400">
-            التخزين: {snapshot.persistenceStatus.sqliteReady ? 'SQLite نشط' : 'غير متاح'} · نقاط الفحص:{' '}
-            {snapshot.persistenceStatus.totalCheckpoints} · آخر حفظ:{' '}
-            {snapshot.persistenceStatus.lastCheckpointAt
-              ? new Date(snapshot.persistenceStatus.lastCheckpointAt).toLocaleTimeString('ar-EG')
-              : 'غير متاح'}
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-slate-100">
+            {snapshot.population.alive}{' '}
+            <span className="text-sm font-normal text-slate-400">
+              / {snapshot.population.totalCreated}
+            </span>
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400 font-mono tabular-nums">
+            ولادات: {snapshot.population.births} · وفيات: {snapshot.population.deaths} · جيل{' '}
+            {snapshot.currentGeneration}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {snapshot.simStatus === 'running' ? (
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>العقول والشبكات العصبية</span>
+            <BrainCircuit className="w-4 h-4 text-cyan-400" />
+          </div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-cyan-300">
+            {snapshot.mindsAndLearning.activeBrains}{' '}
+            <span className="text-sm font-normal text-slate-400">نشط</span>
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400 font-mono tabular-nums">
+            متوسط الاحتفاظ: {(snapshot.mindsAndLearning.avgRetentionScore * 100).toFixed(1)}% · دقة{' '}
+            {(snapshot.mindsAndLearning.predictionAccuracy * 100).toFixed(1)}%
+          </div>
+        </div>
+
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>قاعدة المعرفة والتجارب</span>
+            <Sparkles className="w-4 h-4 text-amber-400" />
+          </div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-amber-300">
+            {snapshot.knowledgeItems.length}{' '}
+            <span className="text-sm font-normal text-slate-400">مفهوم</span>
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400 font-mono tabular-nums">
+            تجارب مسجلة: {snapshot.mindsAndLearning.totalExperiencesRecorded} · رموز لغة:{' '}
+            {snapshot.societyAndLanguage.signalsCount}
+          </div>
+        </div>
+
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>صحة الأفراد ومؤشر البقاء</span>
+            <HeartPulse className="w-4 h-4 text-rose-400" />
+          </div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-slate-100">
+            {snapshot.population.avgHealth}%{' '}
+            <span className="text-xs font-normal text-slate-400">متوسط صحة</span>
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400 font-mono tabular-nums">
+            جوع: {snapshot.population.avgHunger}% · عطش: {snapshot.population.avgThirst}% · خطر:{' '}
+            {snapshot.survivalAndExtinction.riskLevel}
+          </div>
+        </div>
+      </div>
+
+      {/* Live Sync Identity & Operational Status Strip */}
+      <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <ShieldCheck className="w-4 h-4 text-cyan-400" />
+            <span>هوية التشغيل المتزامن والسلامة الحتمية (Run & Sync Identity)</span>
+          </div>
+          <div className="text-[11px] font-mono tabular-nums text-slate-400">
+            بدء التشغيل: {new Date(snapshot.startedAt).toLocaleString('ar-EG')}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-2.5 text-xs">
+          <div className="bg-[#070B12] border border-slate-800/80 rounded p-2">
+            <div className="text-[11px] text-slate-500">معرف الحضارة (Sim ID)</div>
+            <div className="font-mono text-cyan-300 truncate mt-0.5">{snapshot.simulationId}</div>
+          </div>
+          <div className="bg-[#070B12] border border-slate-800/80 rounded p-2">
+            <div className="text-[11px] text-slate-500">معرف التشغيل (Run ID)</div>
+            <div className="font-mono text-slate-200 truncate mt-0.5">{snapshot.runId}</div>
+          </div>
+          <div className="bg-[#070B12] border border-slate-800/80 rounded p-2">
+            <div className="text-[11px] text-slate-500">تسلسل الأحداث (Seq)</div>
+            <div className="font-mono tabular-nums text-emerald-300 mt-0.5">
+              #{snapshot.lastSequence}
+            </div>
+          </div>
+          <div className="bg-[#070B12] border border-slate-800/80 rounded p-2">
+            <div className="text-[11px] text-slate-500">حالة سير العمل</div>
+            <div className="font-mono text-slate-100 mt-0.5">{snapshot.workflowStatus}</div>
+          </div>
+          <div className="bg-[#070B12] border border-slate-800/80 rounded p-2">
+            <div className="text-[11px] text-slate-500">حالة المحاكاة</div>
+            <div className="font-mono text-amber-300 mt-0.5">{snapshot.simStatus}</div>
+          </div>
+          <div className="bg-[#070B12] border border-slate-800/80 rounded p-2">
+            <div className="text-[11px] text-slate-500">بصمة Checkpoint الجذرية</div>
+            <div className="font-mono text-slate-300 truncate mt-0.5">
+              {snapshot.persistenceStatus.lastRootChecksum
+                ? `${snapshot.persistenceStatus.lastRootChecksum.slice(0, 14)}…`
+                : '—'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <TimeSeriesChart
+          title="تطور السكان والصحة عبر الدورات"
+          data={snapshot.history as unknown as Array<Record<string, number>>}
+          series={[
+            { key: 'alive', label: 'الأحياء', color: '#10B981' },
+            { key: 'avgHealth', label: 'متوسط الصحة', color: '#06B6D4' },
+            { key: 'avgHunger', label: 'متوسط الجوع', color: '#F59E0B' },
+          ]}
+        />
+        <TimeSeriesChart
+          title="معدل التعلم التراكمي والاحتفاظ المعرفي"
+          data={snapshot.history as unknown as Array<Record<string, number>>}
+          series={[
+            { key: 'avgReward', label: 'متوسط المكافأة', color: '#8B5CF6' },
+            { key: 'knowledgeCount', label: 'المعارف المكتشفة', color: '#F59E0B' },
+            { key: 'symbolsCount', label: 'الرموز اللغوية', color: '#06B6D4' },
+          ]}
+        />
+      </div>
+
+      {/* Neural Network Specs + Performance Benchmarks + Persistence Checkpoints */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <BrainCircuit className="w-4 h-4 text-violet-400" />
+            <span>مواصفات الشبكة العصبية (Per-Agent Brain)</span>
+          </div>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-slate-400">الإصدار المعماري:</span>
+              <span className="font-mono text-slate-200">
+                {snapshot.mindsAndLearning.neuralNetworkDetails.architectureVersion}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">الطبقات (إدخال/مخفي/إخراج):</span>
+              <span className="font-mono tabular-nums text-cyan-300">
+                {snapshot.mindsAndLearning.neuralNetworkDetails.inputSize} →{' '}
+                {snapshot.mindsAndLearning.neuralNetworkDetails.hiddenSize} →{' '}
+                {snapshot.mindsAndLearning.neuralNetworkDetails.outputSize}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">المعاملات لكل فرد:</span>
+              <span className="font-mono tabular-nums text-slate-200">
+                {snapshot.mindsAndLearning.neuralNetworkDetails.parametersPerBrain} وزن
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">التعلم المستمر:</span>
+              <span className="text-emerald-300 text-[11px]">
+                {snapshot.mindsAndLearning.neuralNetworkDetails.continualLearningMethod}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">متوسط الخسارة / TD Error:</span>
+              <span className="font-mono tabular-nums text-slate-200">
+                {snapshot.mindsAndLearning.neuralNetworkDetails.avgLoss} /{' '}
+                {snapshot.mindsAndLearning.neuralNetworkDetails.avgTdError}
+              </span>
+            </div>
+          </div>
+          <HorizontalDistributionBars
+            title="توزيع القرارات الحالية"
+            items={actionDistItems}
+            accentClass="bg-violet-500"
+          />
+        </div>
+
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <Cpu className="w-4 h-4 text-cyan-400" />
+            <span>مؤشرات الأداء والموارد (Benchmarks)</span>
+          </div>
+          <div className="space-y-1.5 text-xs font-mono tabular-nums">
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">قرار/ثانية:</span>
+              <span className="text-emerald-300">{snapshot.benchmarks.decisionsPerSecond}/s</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">زمن الدورة الواحدة:</span>
+              <span className="text-slate-200">{snapshot.benchmarks.lastDecisionDurationMs} ms</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">ذاكرة RSS / Heap:</span>
+              <span className="text-cyan-300">
+                {snapshot.benchmarks.rssMb} MB / {snapshot.benchmarks.heapUsedMb} MB
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">حجم قاعدة التجارب الحية:</span>
+              <span className="text-slate-200">{snapshot.benchmarks.experienceDbCount} سجل</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">زمن استرجاع Replay:</span>
+              <span className="text-slate-200">{snapshot.benchmarks.experienceRecallTimeMs} ms</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">حجم آخر Checkpoint مضغوط:</span>
+              <span className="text-amber-300">
+                {(snapshot.benchmarks.latestCheckpointBytes / 1024).toFixed(1)} KB
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-sans text-slate-400">حجم SQLite:</span>
+              <span className="text-slate-200">
+                {(snapshot.benchmarks.sqliteDbBytes / 1024).toFixed(1)} KB
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[#0F1623] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+              <Database className="w-4 h-4 text-emerald-400" />
+              <span>نقاط الحفظ المتدرجة (Chunked Checkpoints)</span>
+            </div>
+            <span className="text-[11px] font-mono text-slate-400">
+              {snapshot.persistenceStatus.state}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
             <button
-              type="button"
-              onClick={() => onSimControl('pause')}
-              className="px-3.5 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 rounded flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              disabled={busyAction}
+              onClick={async () => {
+                setBusyAction(true);
+                try {
+                  await onSaveCheckpoint();
+                } finally {
+                  setBusyAction(false);
+                }
+              }}
+              className="flex-1 px-2.5 py-1.5 rounded bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 text-xs font-medium disabled:opacity-50"
             >
-              <Pause className="w-3.5 h-3.5" />
-              <span>إيقاف مؤقت</span>
+              حفظ Checkpoint الآن
             </button>
-          ) : (
             <button
-              type="button"
-              onClick={() => onSimControl('start')}
-              className="px-3.5 py-2 text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-slate-950 rounded flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              disabled={busyAction}
+              onClick={async () => {
+                setBusyAction(true);
+                try {
+                  await onRestoreCheckpoint();
+                } finally {
+                  setBusyAction(false);
+                }
+              }}
+              className="flex-1 px-2.5 py-1.5 rounded bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-200 text-xs font-medium disabled:opacity-50"
             >
-              <Play className="w-3.5 h-3.5" />
-              <span>تشغيل المحاكاة</span>
+              استعادة آخر نسخة سليمة
             </button>
+          </div>
+
+          {verifyMsg && (
+            <div
+              className={`p-2 rounded text-[11px] border ${
+                verifyMsg.valid
+                  ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-200'
+                  : 'bg-rose-950/40 border-rose-700/60 text-rose-200'
+              }`}
+            >
+              {verifyMsg.id}: {verifyMsg.msg}
+            </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => onSimControl('step', { steps: 10 })}
-            className="px-3.5 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <StepForward className="w-3.5 h-3.5" />
-            <span>تنفيذ 10 دورات</span>
-          </button>
-
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5">
-            {[1, 2, 4, 8].map((spd) => (
-              <button
-                key={spd}
-                type="button"
-                onClick={() => onSimControl('set_speed', { speedMultiplier: spd })}
-                className={`px-2.5 py-1 text-xs font-mono-tabular rounded whitespace-nowrap cursor-pointer ${
-                  snapshot.speedMultiplier === spd
-                    ? 'bg-cyan-500/20 text-cyan-300'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
+          <div className="max-h-48 overflow-y-auto space-y-1.5">
+            {snapshot.persistenceStatus.checkpoints.map((cp) => (
+              <div
+                key={cp.checkpointId}
+                className="p-2 bg-[#070B12] border border-slate-800/80 rounded text-[11px] flex items-center justify-between gap-2"
               >
-                {spd}x
-              </button>
+                <div className="min-w-0">
+                  <div className="font-mono text-slate-200 truncate">{cp.checkpointId}</div>
+                  <div className="text-slate-400 font-mono tabular-nums">
+                    T{cp.tick} · جيل {cp.generationNumber} · {cp.chunkCount} جزء ·{' '}
+                    {(cp.compressedBytes / 1024).toFixed(1)} KB
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={async () => {
+                      const res = await onVerifyCheckpoint(cp.checkpointId);
+                      setVerifyMsg({ id: cp.checkpointId, valid: res.valid, msg: res.reasonAr });
+                    }}
+                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+                    title="فحص التكامل"
+                  >
+                    <HardDrive className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => void onRestoreCheckpoint(cp.checkpointId)}
+                    className="px-2 py-1 rounded bg-cyan-900/50 hover:bg-cyan-800/60 text-cyan-200"
+                  >
+                    استعادة
+                  </button>
+                </div>
+              </div>
             ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={onSaveCheckpoint}
-            className="px-3.5 py-2 text-xs font-medium border border-slate-700 hover:border-cyan-500/60 text-slate-200 rounded flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Save className="w-3.5 h-3.5" />
-            <span>حفظ نقطة فحص</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onSimControl('reset')}
-            className="px-3 py-2 text-xs font-medium border border-slate-800 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 rounded flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>إعادة ضبط العالم</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Primary KPI Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {statItems.map((item) => (
-          <div key={item.label} className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
-            <div className="text-xs text-slate-400">{item.label}</div>
-            <div className="text-2xl font-semibold font-mono-tabular text-slate-100 mt-1.5">
-              {item.value}
-            </div>
-            <div className="text-xs text-slate-400 mt-1.5 font-mono-tabular">{item.sub}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Time-Series Telemetry Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <TimeSeriesChart
-          titleAr="تطور السكان والمواليد والوفيات"
-          subtitleAr="بيانات زمنية مستخرجة مباشرة من دورات المحرك"
-          data={snapshot.history}
-          series={[
-            { key: 'alive', labelAr: 'الأحياء', color: '#06B6D4', accessor: (p) => p.alive },
-            { key: 'births', labelAr: 'المواليد التراكمي', color: '#10B981', accessor: (p) => p.birthsCumulative },
-            { key: 'deaths', labelAr: 'الوفيات التراكمي', color: '#F43F5E', accessor: (p) => p.deathsCumulative },
-          ]}
-        />
-
-        <TimeSeriesChart
-          titleAr="تطور الأداء المعرفي والاحتفاظ بالمهارات"
-          subtitleAr="متوسط المكافأة مقابل الاحتفاظ بالمهارات ونمو المعرفة"
-          data={snapshot.history}
-          series={[
-            { key: 'reward', labelAr: 'متوسط المكافأة', color: '#F59E0B', accessor: (p) => p.avgReward },
-            { key: 'ret', labelAr: 'نسبة الاحتفاظ %', color: '#10B981', accessor: (p) => Math.round(p.retentionScore * 100) },
-            { key: 'know', labelAr: 'المعارف المكتشفة', color: '#06B6D4', accessor: (p) => p.knowledgeCount },
-          ]}
-        />
-      </div>
-
-      {/* Engine Performance & Resource Telemetry */}
-      <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
-        <h3 className="text-sm font-semibold text-slate-100 mb-3">
-          قياسات الأداء والموارد الفعلية للمحرك
-        </h3>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
-          <div>
-            <div className="text-slate-400">زمن تنفيذ الدورة</div>
-            <div className="font-mono-tabular text-slate-100 font-semibold mt-0.5">
-              {snapshot.benchmarks.lastDecisionDurationMs} مللي ث
-            </div>
-          </div>
-          <div>
-            <div className="text-slate-400">القرارات بالثانية</div>
-            <div className="font-mono-tabular text-cyan-400 font-semibold mt-0.5">
-              {snapshot.benchmarks.decisionsPerSecond.toLocaleString()} قرار/ث
-            </div>
-          </div>
-          <div>
-            <div className="text-slate-400">استهلاك الذاكرة (RSS)</div>
-            <div className="font-mono-tabular text-slate-100 font-semibold mt-0.5">
-              {snapshot.benchmarks.rssMb} MB
-            </div>
-          </div>
-          <div>
-            <div className="text-slate-400">زمن استرجاع التجارب</div>
-            <div className="font-mono-tabular text-slate-100 font-semibold mt-0.5">
-              {snapshot.benchmarks.experienceRecallTimeMs} مللي ث
-            </div>
-          </div>
-          <div>
-            <div className="text-slate-400">حجم نقطة الفحص المضغوطة</div>
-            <div className="font-mono-tabular text-slate-100 font-semibold mt-0.5">
-              {(snapshot.benchmarks.latestCheckpointBytes / 1024).toFixed(1)} KB
-            </div>
-          </div>
-          <div>
-            <div className="text-slate-400">حجم قاعدة SQLite</div>
-            <div className="font-mono-tabular text-slate-100 font-semibold mt-0.5">
-              {(snapshot.benchmarks.sqliteDbBytes / 1024).toFixed(1)} KB
-            </div>
           </div>
         </div>
       </div>
     </div>
   );
-};
+}

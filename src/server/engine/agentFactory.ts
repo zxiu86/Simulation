@@ -20,8 +20,12 @@ function clamp01(v: number): number {
   return Math.max(0.05, Math.min(0.95, v));
 }
 
-export function randomGenetics(parentA?: GeneticTraits, parentB?: GeneticTraits): GeneticTraits {
-  const mutate = (val: number) => clamp01(val + (Math.random() - 0.5) * 0.16);
+export function randomGenetics(
+  parentA?: GeneticTraits,
+  parentB?: GeneticTraits,
+  rngFn: () => number = Math.random,
+): GeneticTraits {
+  const mutate = (val: number) => clamp01(val + (rngFn() - 0.5) * 0.16);
   if (parentA && parentB) {
     return {
       metabolismRate: mutate((parentA.metabolismRate + parentB.metabolismRate) / 2),
@@ -32,21 +36,24 @@ export function randomGenetics(parentA?: GeneticTraits, parentB?: GeneticTraits)
     };
   }
   return {
-    metabolismRate: clamp01(0.35 + Math.random() * 0.3),
-    curiosityBias: clamp01(0.2 + Math.random() * 0.6),
-    sociabilityBias: clamp01(0.2 + Math.random() * 0.6),
-    riskTolerance: clamp01(0.2 + Math.random() * 0.6),
-    learningRateGene: clamp01(0.35 + Math.random() * 0.35),
+    metabolismRate: clamp01(0.35 + rngFn() * 0.3),
+    curiosityBias: clamp01(0.2 + rngFn() * 0.6),
+    sociabilityBias: clamp01(0.2 + rngFn() * 0.6),
+    riskTolerance: clamp01(0.2 + rngFn() * 0.6),
+    learningRateGene: clamp01(0.35 + rngFn() * 0.35),
   };
 }
 
-export function randomPersonality(genetics: GeneticTraits): PersonalityTraits {
+export function randomPersonality(
+  genetics: GeneticTraits,
+  rngFn: () => number = Math.random,
+): PersonalityTraits {
   return {
-    boldness: clamp01(genetics.riskTolerance * 0.7 + Math.random() * 0.3),
-    empathy: clamp01(genetics.sociabilityBias * 0.7 + Math.random() * 0.3),
-    diligence: clamp01(0.25 + Math.random() * 0.6),
-    caution: clamp01((1 - genetics.riskTolerance) * 0.65 + Math.random() * 0.35),
-    gregariousness: clamp01(genetics.sociabilityBias * 0.65 + Math.random() * 0.35),
+    boldness: clamp01(genetics.riskTolerance * 0.7 + rngFn() * 0.3),
+    empathy: clamp01(genetics.sociabilityBias * 0.7 + rngFn() * 0.3),
+    diligence: clamp01(0.25 + rngFn() * 0.6),
+    caution: clamp01((1 - genetics.riskTolerance) * 0.65 + rngFn() * 0.35),
+    gregariousness: clamp01(genetics.sociabilityBias * 0.65 + rngFn() * 0.35),
   };
 }
 
@@ -62,21 +69,24 @@ export function createAgent(params: {
   parentA?: AgentState;
   parentB?: AgentState;
   customName?: string;
+  rngFn?: () => number;
 }): AgentState {
+  const rngFn = params.rngFn ?? Math.random;
   const genetics = randomGenetics(
     params.parentA?.identity.geneticTraits,
     params.parentB?.identity.geneticTraits,
+    rngFn,
   );
-  const personality = randomPersonality(genetics);
-  const id = `ind_${params.generation}_${params.serialIndex}_${Math.floor(Math.random() * 10000)}`;
-  const seed = Math.floor(Math.random() * 1_000_000_000) + params.serialIndex * 7919 + params.birthTick * 131;
+  const personality = randomPersonality(genetics, rngFn);
+  const id = `ind_${params.generation}_${params.serialIndex}_${Math.floor(rngFn() * 10000)}`;
+  const seed = Math.floor(rngFn() * 1_000_000_000) + params.serialIndex * 7919 + params.birthTick * 131;
 
   const lineageIds: string[] = [];
   if (params.parentA) lineageIds.push(params.parentA.identity.id);
   if (params.parentB) lineageIds.push(params.parentB.identity.id);
 
   const stage = params.ageStage ?? (params.originType === 'natural_birth' ? 'child' : 'adult');
-  const ageTicks = params.ageTicks ?? (stage === 'child' ? 0 : 120 + Math.floor(Math.random() * 140));
+  const ageTicks = params.ageTicks ?? (stage === 'child' ? 0 : 120 + Math.floor(rngFn() * 140));
 
   return {
     identity: {
@@ -92,26 +102,26 @@ export function createAgent(params: {
     ageStage: stage,
     sex: params.serialIndex % 2 === 0 ? 'female' : 'male',
     alive: true,
-    sectorX: params.sectorX ?? Math.floor(Math.random() * GRID_SIZE),
-    sectorY: params.sectorY ?? Math.floor(Math.random() * GRID_SIZE),
+    sectorX: params.sectorX ?? Math.floor(rngFn() * GRID_SIZE),
+    sectorY: params.sectorY ?? Math.floor(rngFn() * GRID_SIZE),
     physical: {
-      hunger: 18 + Math.random() * 18,
-      thirst: 18 + Math.random() * 18,
-      health: 92 + Math.random() * 8,
-      energy: 82 + Math.random() * 18,
-      fatigue: Math.random() * 12,
+      hunger: 18 + rngFn() * 18,
+      thirst: 18 + rngFn() * 18,
+      health: 92 + rngFn() * 8,
+      energy: 82 + rngFn() * 18,
+      fatigue: rngFn() * 12,
       injury: 0,
       illness: 0,
       poison: 0,
       poisonTimer: 0,
       pendingPoisonDose: 0,
-      sleepNeed: Math.random() * 15,
+      sleepNeed: rngFn() * 15,
     },
     psychological: {
-      stress: 10 + Math.random() * 15,
-      morale: 68 + Math.random() * 20,
-      safetyFeeling: 65 + Math.random() * 20,
-      loneliness: 15 + Math.random() * 20,
+      stress: 10 + rngFn() * 15,
+      morale: 68 + rngFn() * 20,
+      safetyFeeling: 65 + rngFn() * 20,
+      loneliness: 15 + rngFn() * 20,
     },
     needs: {
       survivalPriority: 0.4,

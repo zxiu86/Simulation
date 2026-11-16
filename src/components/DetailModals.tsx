@@ -1,325 +1,358 @@
-import React from 'react';
-import { X } from 'lucide-react';
-import {
-  AGENT_ACTIONS,
-  type AgentActionType,
-  type AgentState,
-  type AgentSummaryView,
-  type CivilizationKnowledgeItem,
-  type CollectiveExperienceRecord,
-  type GenerationSummary,
+import React, { useEffect, useState } from 'react';
+import { X, Brain, HeartPulse, History, Users } from 'lucide-react';
+import type {
+  AgentState,
+  AgentSummaryView,
+  CivilizationKnowledgeItem,
+  CollectiveExperienceRecord,
+  GenerationSummary,
 } from '../shared/types.ts';
 
-const ACTION_LABELS_AR: Record<AgentActionType, string> = {
-  explore: 'استكشاف',
-  forage_plant: 'جمع نباتات',
-  drink_water: 'شرب ماء',
-  hunt_prey: 'صيد',
-  observe_peer: 'مراقبة أقران',
-  cooperate_task: 'تعاون',
-  share_resource: 'مشاركة',
-  rest_sleep: 'راحة ونوم',
-  craft_attempt: 'تصنيع/بناء',
-  emit_signal: 'إصدار إشارة',
-  tend_child: 'رعاية صغار',
-  reconcile_or_bond: 'تواصل اجتماعي',
-  treat_ailment: 'علاج صحي',
-  move_sector: 'انتقال قطاعي',
-};
-
-const SKILL_LABELS_AR: Record<keyof AgentState['skills'], string> = {
-  foraging: 'الجمع والتمييز النباتي',
-  waterFinding: 'اكتشاف المياه النقية',
+const SKILL_LABELS_AR: Record<string, string> = {
+  foraging: 'الجمع والنباتات',
+  waterFinding: 'اكتشاف المياه',
   hunting: 'الصيد والمطاردة',
-  crafting: 'التصنيع والأدوات',
-  healing: 'التداوي والرعاية الصحية',
+  crafting: 'الصناعة والأدوات',
+  healing: 'العناية الصحية',
   cooperation: 'التعاون الجماعي',
-  signaling: 'الإشارة والتواصل',
-  shelterBuilding: 'بناء الملاجئ',
-  preservation: 'حفظ وتخزين الموارد',
-  protoAgriculture: 'رعاية النباتات (زراعة أولية)',
+  signaling: 'الإشارات والتواصل',
+  shelterBuilding: 'بناء المأوى',
+  preservation: 'حفظ الموارد',
+  protoAgriculture: 'رعاية النباتات',
 };
 
-const ORIGIN_AR: Record<AgentState['identity']['originType'], string> = {
-  initial: 'الجيل المؤسس الأولي',
-  natural_birth: 'ولادة طبيعية داخل العالم',
-  isolated_promoted: 'مدموج من التدريب المعزول',
-  recovery_revived: 'مستعاد بهويته الأصلية',
-  recovery_new: 'جيل استعادة مستقل',
-};
-
-export const AgentDetailModal: React.FC<{
-  agent: AgentState | null;
-  experiences: CollectiveExperienceRecord[];
-  loading: boolean;
+export function AgentDetailModal({
+  agentId,
+  onClose,
+}: {
+  agentId: string | null;
   onClose: () => void;
-}> = ({ agent, experiences, loading, onClose }) => {
-  if (!agent && !loading) return null;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [agent, setAgent] = useState<AgentState | null>(null);
+  const [experiences, setExperiences] = useState<CollectiveExperienceRecord[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!agentId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/agents/${encodeURIComponent(agentId)}`)
+      .then((r) => {
+        if (!r.ok) throw new Error('تعذر جلب ملف الفرد');
+        return r.json();
+      })
+      .then((data: { agent: AgentState; experiences: CollectiveExperienceRecord[] }) => {
+        if (!cancelled) {
+          setAgent(data.agent);
+          setExperiences(data.experiences ?? []);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError((err as Error).message);
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  if (!agentId) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-      <div className="bg-[#0F1623] border border-slate-700 rounded-md w-full max-w-4xl max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800">
-          <div>
-            <h2 className="text-base font-semibold text-slate-100">
-              {agent ? `ملف الفرد: ${agent.identity.name}` : 'جاري تحميل بيانات الفرد…'}
-            </h2>
-            {agent && (
-              <p className="text-xs text-slate-400 mt-0.5 font-mono-tabular">
-                {agent.identity.id} · الجيل {agent.generation} ·{' '}
-                {ORIGIN_AR[agent.identity.originType]} ·{' '}
-                {agent.alive ? 'حي' : `متوفى (${agent.causeOfDeath ?? 'غير محدد'})`}
-              </p>
-            )}
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-[#0B111C] border border-slate-700/80 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#0F1623]">
+          <div className="flex items-center gap-2">
+            <Brain className="w-4 h-4 text-cyan-400" />
+            <h3 className="text-sm font-bold text-slate-100">
+              ملف الفرد المستقل: {agent?.identity.name ?? agentId}
+            </h3>
           </div>
           <button
-            type="button"
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-100 border border-slate-800 rounded cursor-pointer"
-            aria-label="إغلاق"
+            className="p-1.5 rounded border border-slate-700 hover:bg-slate-800 text-slate-300"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-5 overflow-y-auto space-y-5 text-sm">
-          {loading || !agent ? (
-            <div className="py-12 text-center text-slate-400 text-xs">
-              جاري استرجاع الحالة الكاملة للعقل والذاكرة…
-            </div>
-          ) : (
+        <div className="p-4 overflow-y-auto space-y-4 text-xs">
+          {loading && <div className="text-slate-400 py-8 text-center">جاري تحميل بيانات العقل والذاكرة...</div>}
+          {error && <div className="text-rose-400 py-4">{error}</div>}
+          {agent && !loading && (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="border border-slate-800 rounded p-3">
-                  <div className="text-xs text-slate-400">العمر / المرحلة</div>
-                  <div className="font-mono-tabular text-slate-100 font-semibold mt-1">
-                    {agent.ageTicks} دورة ({agent.ageStage === 'child' ? 'طفل' : agent.ageStage === 'adult' ? 'بالغ' : 'مسن'})
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400">الحالة / الجيل</div>
+                  <div className="font-semibold text-slate-100 mt-0.5">
+                    {agent.alive ? 'حي' : `متوفى (${agent.causeOfDeath})`} · الجيل {agent.generation}
                   </div>
                 </div>
-                <div className="border border-slate-800 rounded p-3">
-                  <div className="text-xs text-slate-400">الموقع والجنس</div>
-                  <div className="font-mono-tabular text-slate-100 font-semibold mt-1">
-                    قطاع {agent.sectorX},{agent.sectorY} · {agent.sex === 'female' ? 'أنثى' : 'ذكر'}
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400">العمر / القطاع</div>
+                  <div className="font-mono tabular-nums text-slate-100 mt-0.5">
+                    {agent.ageTicks} دورة · ({agent.sectorX},{agent.sectorY})
                   </div>
                 </div>
-                <div className="border border-slate-800 rounded p-3">
-                  <div className="text-xs text-slate-400">الأداء التراكمي (المكافأة)</div>
-                  <div className="font-mono-tabular text-cyan-400 font-semibold mt-1">
-                    {agent.rlStats.totalReward.toFixed(2)}
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400">خطوات المُحسّن / معدل التعلم</div>
+                  <div className="font-mono tabular-nums text-cyan-300 mt-0.5">
+                    step {agent.brain.optimizerStep} · lr {agent.brain.currentLearningRate.toFixed(5)}
                   </div>
                 </div>
-                <div className="border border-slate-800 rounded p-3">
-                  <div className="text-xs text-slate-400">خطوات التعلم والاحتفاظ</div>
-                  <div className="font-mono-tabular text-emerald-400 font-semibold mt-1">
-                    {agent.brain.trainingSteps} · {(agent.rlStats.retentionScore * 100).toFixed(1)}%
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400">الاحتفاظ / النسيان (EWC)</div>
+                  <div className="font-mono tabular-nums text-emerald-300 mt-0.5">
+                    {(agent.rlStats.retentionScore * 100).toFixed(1)}% احتفاظ · TD {agent.brain.avgTdError.toFixed(3)}
                   </div>
                 </div>
               </div>
 
-              {!agent.alive && (
-                <div className="border border-rose-500/40 bg-rose-950/20 rounded p-3 text-xs text-rose-200">
-                  سبب الوفاة المسجل: <strong>{agent.causeOfDeath}</strong> (عند الدورة{' '}
-                  <span className="font-mono-tabular">{agent.deathTick}</span>)
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-[#0F1623] border border-slate-800 rounded p-3 space-y-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                    <HeartPulse className="w-3.5 h-3.5 text-emerald-400" />
+                    الحالة الجسدية والنفسية والمهارات المكتسبة
+                  </div>
+                  <div className="grid grid-cols-4 gap-2 text-[11px] font-mono tabular-nums">
+                    <div>صحة: {agent.physical.health.toFixed(0)}</div>
+                    <div>جوع: {agent.physical.hunger.toFixed(0)}</div>
+                    <div>عطش: {agent.physical.thirst.toFixed(0)}</div>
+                    <div>طاقة: {agent.physical.energy.toFixed(0)}</div>
+                    <div>تسمم: {agent.physical.poison.toFixed(0)}</div>
+                    <div>إصابة: {agent.physical.injury.toFixed(0)}</div>
+                    <div>ضغط: {agent.psychological.stress.toFixed(0)}</div>
+                    <div>معنويات: {agent.psychological.morale.toFixed(0)}</div>
+                  </div>
+                  <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                    {Object.entries(agent.skills).map(([k, v]) => (
+                      <div key={k} className="flex items-center gap-2">
+                        <span className="w-28 text-slate-400 truncate">
+                          {SKILL_LABELS_AR[k] ?? k}
+                        </span>
+                        <div className="flex-1 h-1.5 bg-slate-900 rounded overflow-hidden">
+                          <div
+                            className="h-full bg-cyan-500"
+                            style={{ width: `${Math.round(v * 100)}%` }}
+                          />
+                        </div>
+                        <span className="w-10 text-left font-mono tabular-nums text-slate-200">
+                          {(v * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-[#0F1623] border border-slate-800 rounded p-3 space-y-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                    <Brain className="w-3.5 h-3.5 text-violet-400" />
+                    الشبكة العصبية المستقلة والمفردات المكتسبة
+                  </div>
+                  <div className="text-[11px] text-slate-300 space-y-1 font-mono tabular-nums">
+                    <div>
+                      البنية: {agent.brain.architectureVersion} ({agent.brain.inputSize}-
+                      {agent.brain.hiddenSize}-{agent.brain.outputSize})
+                    </div>
+                    <div>
+                      تدريب: {agent.brain.trainingSteps} · إعادة بث: {agent.rlStats.replayUpdates} ·
+                      متوسط الخسارة: {agent.brain.avgLoss.toFixed(4)}
+                    </div>
+                    <div>
+                      المكافأة الكلية: {agent.rlStats.totalReward.toFixed(2)} (قصيرة:{' '}
+                      {agent.rlStats.shortTermRewardSum.toFixed(1)} / طويلة:{' '}
+                      {agent.rlStats.longTermRewardSum.toFixed(1)})
+                    </div>
+                    <div>
+                      علاقات: {Object.keys(agent.relationships).length} · نسل: {agent.offspringCount}{' '}
+                      · معارف: {agent.knowledgeIds.length}
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-slate-800">
+                    <div className="text-slate-400 mb-1">المفردات الناشئة ({Object.keys(agent.vocabulary).length}):</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.values(agent.vocabulary).length === 0 ? (
+                        <span className="text-slate-500">لم يعتمد رموزاً بعد</span>
+                      ) : (
+                        Object.values(agent.vocabulary).map((v) => (
+                          <span
+                            key={v.symbol + v.meaning}
+                            className="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded text-slate-200"
+                          >
+                            {v.symbol} = {v.meaning} ({Math.round(v.confidence * 100)}%)
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-[#0F1623] border border-slate-800 rounded p-3 space-y-2">
+                <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                  <History className="w-3.5 h-3.5 text-amber-400" />
+                  الذاكرة العرضية الشخصية (آخر {agent.episodicMemory.length} حدثاً)
+                </div>
+                <div className="max-h-48 overflow-y-auto space-y-1">
+                  {agent.episodicMemory
+                    .slice()
+                    .reverse()
+                    .map((m, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between gap-2 px-2 py-1 bg-slate-900/70 border border-slate-800/70 rounded"
+                      >
+                        <span className="font-mono text-slate-400">T{m.tick}</span>
+                        <span className="flex-1 text-slate-200 truncate">{m.outcomeSummary}</span>
+                        <span
+                          className={`font-mono tabular-nums ${m.reward >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}
+                        >
+                          {m.reward >= 0 ? `+${m.reward}` : m.reward}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              {experiences.length > 0 && (
+                <div className="bg-[#0F1623] border border-slate-800 rounded p-3 space-y-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                    <Users className="w-3.5 h-3.5 text-cyan-400" />
+                    مساهماته في قاعدة التجارب الجماعية
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {experiences.map((ex) => (
+                      <div
+                        key={ex.id}
+                        className="flex items-center justify-between gap-2 px-2 py-1 bg-slate-900/60 border border-slate-800/70 rounded"
+                      >
+                        <span className="font-mono text-slate-400">T{ex.simTimeTick}</span>
+                        <span className="text-cyan-300">{ex.entityKey}</span>
+                        <span className="flex-1 text-slate-300 truncate">{ex.immediateOutcome}</span>
+                        <span className="font-mono tabular-nums text-slate-200">
+                          موثوقية {(ex.reliabilityScore * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="border border-slate-800 rounded p-4">
-                  <h3 className="text-xs font-semibold text-slate-300 mb-3">
-                    الحالة الجسدية والنفسية
-                  </h3>
-                  <div className="grid grid-cols-2 gap-2 text-xs font-mono-tabular">
-                    <div>الصحة: {agent.physical.health.toFixed(1)}%</div>
-                    <div>الطاقة: {agent.physical.energy.toFixed(1)}%</div>
-                    <div>الجوع: {agent.physical.hunger.toFixed(1)}%</div>
-                    <div>العطش: {agent.physical.thirst.toFixed(1)}%</div>
-                    <div>التسمم: {agent.physical.poison.toFixed(1)}%</div>
-                    <div>الإصابة: {agent.physical.injury.toFixed(1)}%</div>
-                    <div>المرض: {agent.physical.illness.toFixed(1)}%</div>
-                    <div>الضغط النفسي: {agent.psychological.stress.toFixed(1)}%</div>
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
-                    آخر قرار: <span className="text-slate-200">{agent.lastAction ?? '—'}</span>
-                    {agent.lastActionReason && (
-                      <div className="mt-1 text-slate-400">{agent.lastActionReason}</div>
-                    )}
+export function GenerationDetailModal({
+  generationNum,
+  onClose,
+  onSelectAgent,
+}: {
+  generationNum: number | null;
+  onClose: () => void;
+  onSelectAgent: (id: string) => void;
+}) {
+  const [data, setData] = useState<{
+    summary: GenerationSummary | null;
+    members: AgentSummaryView[];
+    knowledgeItems: CivilizationKnowledgeItem[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (generationNum === null) return;
+    fetch(`/api/generations/${generationNum}`)
+      .then((r) => r.json())
+      .then((res) => setData(res))
+      .catch(() => setData(null));
+  }, [generationNum]);
+
+  if (generationNum === null) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-[#0B111C] border border-slate-700/80 rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#0F1623]">
+          <h3 className="text-sm font-bold text-slate-100">ملف الجيل {generationNum}</h3>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded border border-slate-700 hover:bg-slate-800 text-slate-300"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 overflow-y-auto space-y-4 text-xs">
+          {!data?.summary ? (
+            <div className="text-slate-400 text-center py-8">جاري تحميل بيانات الجيل...</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono tabular-nums">
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400 font-sans">الأفراد / الأحياء</div>
+                  <div className="text-slate-100 font-semibold mt-0.5">
+                    {data.summary.totalAgents} / {data.summary.aliveCount}
                   </div>
                 </div>
-
-                <div className="border border-slate-800 rounded p-4">
-                  <h3 className="text-xs font-semibold text-slate-300 mb-3">
-                    المهارات المكتسبة والشبكة العصبية
-                  </h3>
-                  <div className="space-y-1.5 text-xs">
-                    {(Object.keys(agent.skills) as Array<keyof AgentState['skills']>).map((sk) => (
-                      <div key={sk} className="flex items-center justify-between gap-2">
-                        <span className="text-slate-400">{SKILL_LABELS_AR[sk]}</span>
-                        <div className="flex items-center gap-2 w-36">
-                          <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
-                            <div
-                              className="h-full bg-cyan-500"
-                              style={{ width: `${Math.round(agent.skills[sk] * 100)}%` }}
-                            />
-                          </div>
-                          <span className="font-mono-tabular text-slate-200 w-9 text-left">
-                            {Math.round(agent.skills[sk] * 100)}%
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400 font-sans">متوسط المكافأة</div>
+                  <div className="text-cyan-300 font-semibold mt-0.5">{data.summary.avgReward}</div>
+                </div>
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400 font-sans">معدل بقاء الصغار</div>
+                  <div className="text-emerald-300 font-semibold mt-0.5">
+                    {(data.summary.childSurvivalRate * 100).toFixed(1)}%
                   </div>
                 </div>
-              </div>
-
-              {/* Individual Neural Network Anatomy */}
-              <div className="border border-slate-800 rounded p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-xs font-semibold text-slate-200">
-                    تشريح الشبكة العصبية المستقلة للفرد ({agent.brain.architectureVersion})
-                  </h3>
-                  <span className="text-xs font-mono-tabular text-cyan-400">
-                    {agent.brain.inputSize} → {agent.brain.hiddenSize} → {agent.brain.outputSize} (+Value)
-                  </span>
-                </div>
-
-                {(() => {
-                  const allW = [...agent.brain.w1, ...agent.brain.wPolicy, ...agent.brain.wValue];
-                  const minW = Math.min(...allW);
-                  const maxW = Math.max(...allW);
-                  const meanAbsW = allW.reduce((s, w) => s + Math.abs(w), 0) / Math.max(1, allW.length);
-                  const avgFisher =
-                    agent.brain.fisherImportance.reduce((s, f) => s + f, 0) /
-                    Math.max(1, agent.brain.fisherImportance.length);
-                  return (
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono-tabular">
-                      <div className="border border-slate-800 rounded p-2">
-                        <div className="text-slate-400 font-sans">عدد المعاملات</div>
-                        <div className="text-slate-100 mt-0.5">
-                          {allW.length + agent.brain.b1.length + agent.brain.bPolicy.length + 1}
-                        </div>
-                      </div>
-                      <div className="border border-slate-800 rounded p-2">
-                        <div className="text-slate-400 font-sans">متوسط الخسارة / TD</div>
-                        <div className="text-amber-300 mt-0.5">
-                          {agent.brain.avgLoss.toFixed(3)} / {agent.brain.avgTdError.toFixed(3)}
-                        </div>
-                      </div>
-                      <div className="border border-slate-800 rounded p-2">
-                        <div className="text-slate-400 font-sans">دقة التنبؤ / الإنتروبيا</div>
-                        <div className="text-emerald-400 mt-0.5">
-                          {(agent.brain.predictionAccuracy * 100).toFixed(0)}% / {(agent.brain.policyEntropy * 100).toFixed(0)}%
-                        </div>
-                      </div>
-                      <div className="border border-slate-800 rounded p-2">
-                        <div className="text-slate-400 font-sans">نطاق الأوزان (Min..Max)</div>
-                        <div className="text-slate-200 mt-0.5">
-                          {minW.toFixed(2)} .. {maxW.toFixed(2)}
-                        </div>
-                      </div>
-                      <div className="border border-slate-800 rounded p-2">
-                        <div className="text-slate-400 font-sans">متوسط |W| / Fisher</div>
-                        <div className="text-cyan-300 mt-0.5">
-                          {meanAbsW.toFixed(3)} / {avgFisher.toFixed(3)}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                <div>
-                  <div className="text-xs text-slate-400 mb-2">
-                    توزيع احتمالات طبقة السياسة الحالية (Softmax Output — تحديثات Replay: {agent.rlStats.replayUpdates}):
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-                    {AGENT_ACTIONS.map((act, idx) => {
-                      const prob = agent.brain.lastActionProbabilities[idx] ?? 0;
-                      const pct = Math.round(prob * 100);
-                      return (
-                        <div key={act} className="flex items-center justify-between gap-2">
-                          <span className="text-slate-300 w-24 truncate">{ACTION_LABELS_AR[act]}</span>
-                          <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
-                            <div
-                              className="h-full bg-emerald-500"
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                          <span className="font-mono-tabular text-slate-300 w-9 text-left">{pct}%</span>
-                        </div>
-                      );
-                    })}
+                <div className="bg-[#0F1623] border border-slate-800 p-2.5 rounded">
+                  <div className="text-slate-400 font-sans">معارف مكتشفة</div>
+                  <div className="text-amber-300 font-semibold mt-0.5">
+                    {data.summary.knowledgeDiscoveredCount}
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="border border-slate-800 rounded p-4">
-                  <h3 className="text-xs font-semibold text-slate-300 mb-2">
-                    المفردات والعلاقات الاجتماعية
-                  </h3>
-                  <div className="text-xs text-slate-400 mb-2">
-                    عدد العلاقات: <span className="font-mono-tabular text-slate-200">{Object.keys(agent.relationships).length}</span> ·
-                    المفردات المكتسبة: <span className="font-mono-tabular text-slate-200">{Object.keys(agent.vocabulary).length}</span> ·
-                    الأبناء: <span className="font-mono-tabular text-slate-200">{agent.offspringCount}</span>
-                  </div>
-                  <div className="max-h-36 overflow-y-auto space-y-1 text-xs">
-                    {Object.entries(agent.vocabulary).length === 0 ? (
-                      <div className="text-slate-500">لم يكتسب إشارات لغوية بعد.</div>
-                    ) : (
-                      Object.entries(agent.vocabulary).map(([k, v]) => (
-                        <div key={k} className="flex justify-between border-b border-slate-800/60 py-1">
-                          <span className="text-cyan-300 font-semibold">"{v.symbol}" — {v.meaning}</span>
-                          <span className="font-mono-tabular text-slate-400">تعرض: {v.exposures}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div className="border border-slate-800 rounded p-4">
-                  <h3 className="text-xs font-semibold text-slate-300 mb-2">
-                    الذاكرة العرضية الحديثة ({agent.episodicMemory.length})
-                  </h3>
-                  <div className="max-h-40 overflow-y-auto space-y-1.5 text-xs">
-                    {agent.episodicMemory
-                      .slice()
-                      .reverse()
-                      .slice(0, 12)
-                      .map((mem, idx) => (
-                        <div key={idx} className="border-b border-slate-800/60 pb-1">
-                          <div className="flex justify-between font-mono-tabular">
-                            <span className={mem.success ? 'text-emerald-400' : 'text-rose-400'}>
-                              دورة {mem.tick} · {mem.action}
-                            </span>
-                            <span className="text-slate-300">مكافأة: {mem.reward}</span>
-                          </div>
-                          <div className="text-slate-400">{mem.outcomeSummary}</div>
-                        </div>
+              <div>
+                <h4 className="font-semibold text-slate-200 mb-2">
+                  أفراد الجيل ({data.members.length})
+                </h4>
+                <div className="max-h-56 overflow-y-auto border border-slate-800 rounded">
+                  <table className="w-full text-right">
+                    <thead className="bg-[#0F1623] text-slate-400">
+                      <tr>
+                        <th className="p-2">الاسم</th>
+                        <th className="p-2">الحالة</th>
+                        <th className="p-2">العمر</th>
+                        <th className="p-2">المكافأة</th>
+                        <th className="p-2">المهارات</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70">
+                      {data.members.map((m) => (
+                        <tr
+                          key={m.id}
+                          onClick={() => {
+                            onClose();
+                            onSelectAgent(m.id);
+                          }}
+                          className="hover:bg-slate-800/40 cursor-pointer"
+                        >
+                          <td className="p-2 text-cyan-300 font-medium">{m.name}</td>
+                          <td className="p-2">{m.alive ? 'حي' : 'متوفى'}</td>
+                          <td className="p-2 font-mono tabular-nums">{m.ageTicks}</td>
+                          <td className="p-2 font-mono tabular-nums">{m.totalReward}</td>
+                          <td className="p-2 font-mono tabular-nums">{m.skillsSum}</td>
+                        </tr>
                       ))}
-                  </div>
+                    </tbody>
+                  </table>
                 </div>
-              </div>
-
-              <div className="border border-slate-800 rounded p-4">
-                <h3 className="text-xs font-semibold text-slate-300 mb-2">
-                  التجارب المسجلة في القاعدة الجماعية ({experiences.length})
-                </h3>
-                {experiences.length === 0 ? (
-                  <div className="text-xs text-slate-500">لا توجد تجارب مسجلة لهذا الفرد بعد.</div>
-                ) : (
-                  <div className="max-h-44 overflow-y-auto divide-y divide-slate-800/70 text-xs">
-                    {experiences.slice(0, 15).map((exp) => (
-                      <div key={exp.id} className="py-2 flex flex-wrap justify-between gap-2">
-                        <div>
-                          <span className="text-slate-200 font-medium">{exp.immediateOutcome}</span>
-                          <div className="text-slate-500 mt-0.5">{exp.actionReason}</div>
-                        </div>
-                        <div className="font-mono-tabular text-slate-400">
-                          دورة {exp.simTimeTick} · مكافأة {exp.reward} · موثوقية {(exp.reliabilityScore * 100).toFixed(0)}%
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             </>
           )}
@@ -327,108 +360,4 @@ export const AgentDetailModal: React.FC<{
       </div>
     </div>
   );
-};
-
-export const GenerationDetailModal: React.FC<{
-  detail: {
-    summary: GenerationSummary;
-    agents: AgentSummaryView[];
-    discoveries: CivilizationKnowledgeItem[];
-  } | null;
-  onClose: () => void;
-  onSelectAgent: (id: string) => void;
-}> = ({ detail, onClose, onSelectAgent }) => {
-  if (!detail) return null;
-  const { summary, agents, discoveries } = detail;
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-      <div className="bg-[#0F1623] border border-slate-700 rounded-md w-full max-w-3xl max-h-[88vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800">
-          <div>
-            <h2 className="text-base font-semibold text-slate-100">
-              تفاصيل الجيل {summary.generation}
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5 font-mono-tabular">
-              بدأ عند الدورة {summary.startedAtTick} · الإجمالي: {summary.totalAgents} · الأحياء:{' '}
-              {summary.aliveCount}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-100 border border-slate-800 rounded cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-5 overflow-y-auto space-y-4 text-xs">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="border border-slate-800 rounded p-3">
-              <div className="text-slate-400">متوسط المكافأة</div>
-              <div className="font-mono-tabular text-sm font-semibold text-cyan-400 mt-1">
-                {summary.avgReward}
-              </div>
-            </div>
-            <div className="border border-slate-800 rounded p-3">
-              <div className="text-slate-400">متوسط العمر (دورة)</div>
-              <div className="font-mono-tabular text-sm font-semibold text-slate-100 mt-1">
-                {summary.avgLifespanTicks}
-              </div>
-            </div>
-            <div className="border border-slate-800 rounded p-3">
-              <div className="text-slate-400">معدل بقاء الصغار</div>
-              <div className="font-mono-tabular text-sm font-semibold text-emerald-400 mt-1">
-                {(summary.childSurvivalRate * 100).toFixed(1)}%
-              </div>
-            </div>
-            <div className="border border-slate-800 rounded p-3">
-              <div className="text-slate-400">المعارف المكتشفة</div>
-              <div className="font-mono-tabular text-sm font-semibold text-amber-400 mt-1">
-                {discoveries.length}
-              </div>
-            </div>
-          </div>
-
-          <div className="border border-slate-800 rounded p-3">
-            <h3 className="font-semibold text-slate-200 mb-2">الاكتشافات المنسوبة لهذا الجيل</h3>
-            {discoveries.length === 0 ? (
-              <div className="text-slate-500">لم يسجل هذا الجيل اكتشافات جديدة منفردة بعد.</div>
-            ) : (
-              <div className="space-y-1.5">
-                {discoveries.map((k) => (
-                  <div key={k.id} className="flex justify-between border-b border-slate-800/60 pb-1">
-                    <span className="text-slate-200">{k.titleAr}</span>
-                    <span className="font-mono-tabular text-slate-400">
-                      ثقة {(k.confidence * 100).toFixed(0)}% · تجارب {k.totalTrials}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="border border-slate-800 rounded p-3">
-            <h3 className="font-semibold text-slate-200 mb-2">أفراد الجيل ({agents.length})</h3>
-            <div className="max-h-52 overflow-y-auto divide-y divide-slate-800/60">
-              {agents.slice(0, 60).map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => onSelectAgent(a.id)}
-                  className="w-full py-1.5 flex items-center justify-between text-right hover:bg-slate-800/40 px-2 rounded cursor-pointer"
-                >
-                  <span className="text-slate-200 font-medium">{a.name}</span>
-                  <span className="font-mono-tabular text-slate-400">
-                    {a.alive ? 'حي' : 'متوفى'} · صحة {a.health}% · مكافأة {a.totalReward}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+}

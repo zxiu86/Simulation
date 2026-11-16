@@ -10,6 +10,7 @@ import {
 } from '../../shared/types.ts';
 import {
   computeBrainIntegrityHash,
+  ensureBrainOptimizerBuffers,
   forwardBrain,
   HIDDEN_SIZE,
   INPUT_SIZE,
@@ -55,10 +56,9 @@ export class IsolatedTrainingManager {
     const cohortSize = Math.max(8, Math.min(30, params.cohortSize ?? 16));
     const sessionId = `trn_${Date.now()}`;
 
-    this.sandbox = new CivilizationSimulationEngine(sessionId);
-    // Trim sandbox initial population to cohortSize for focused isolated training
+    this.sandbox = new CivilizationSimulationEngine({ runId: sessionId, simulationId: sessionId });
     this.sandbox.agents = this.sandbox.agents.slice(0, cohortSize);
-    this.sandbox.simStatus = 'running';
+    this.sandbox.simStatus = 'Running';
 
     this.session = {
       sessionId,
@@ -91,9 +91,9 @@ export class IsolatedTrainingManager {
   ): { session: TrainingSessionState; exportedPackage: BrainPackage | null } {
     this.stopSession();
     const sessionId = `trn_cli_${Date.now()}`;
-    this.sandbox = new CivilizationSimulationEngine(sessionId);
+    this.sandbox = new CivilizationSimulationEngine({ runId: sessionId, simulationId: sessionId });
     this.sandbox.agents = this.sandbox.agents.slice(0, cohortSize);
-    this.sandbox.simStatus = 'running';
+    this.sandbox.simStatus = 'Running';
 
     this.session = {
       sessionId,
@@ -127,7 +127,6 @@ export class IsolatedTrainingManager {
       this.sandbox.step();
       this.session.totalSteps += 1;
 
-      // Focus training pressures gently in isolated sandbox without faking rewards
       if (this.session.focusMode === 'hunting') {
         for (const a of this.sandbox.agents) {
           if (a.alive) a.skills.hunting = Math.min(1, a.skills.hunting + 0.004);
@@ -175,7 +174,6 @@ export class IsolatedTrainingManager {
       clearInterval(this.timer);
       this.timer = null;
     }
-    // Genuine model quality evaluation (not just workflow completion!)
     const passedQualityGate =
       this.session.avgSurvivalRate >= 0.45 &&
       this.session.actionSuccessRate >= 0.32 &&
@@ -209,7 +207,6 @@ export class IsolatedTrainingManager {
 
   public exportBestBrainPackage(): BrainPackage | null {
     if (!this.sandbox || this.sandbox.agents.length === 0) return null;
-    // Select highest-performing alive agent (or highest totalReward overall)
     const sorted = [...this.sandbox.agents].sort((a, b) => {
       if (a.alive !== b.alive) return a.alive ? -1 : 1;
       return b.rlStats.totalReward - a.rlStats.totalReward;
@@ -249,9 +246,9 @@ export class IsolatedTrainingManager {
         hiddenSize: best.brain.hiddenSize,
         outputSize: best.brain.outputSize,
       },
-      weights: JSON.parse(JSON.stringify(best.brain)) as AgentState['brain'],
+      weights: structuredClone(best.brain),
       knowledgeRefs: [...best.knowledgeIds],
-      memoryState: JSON.parse(JSON.stringify(best.episodicMemory.slice(-20))),
+      memoryState: structuredClone(best.episodicMemory.slice(-20)),
       identityTemplate: {
         suggestedName: `مدرّب-${best.identity.name}`,
         personality: { ...best.personality },
@@ -281,7 +278,6 @@ export function verifyAndPromoteBrainPackage(
 ): PromotionVerificationResult {
   const checks: PromotionVerificationResult['checks'] = [];
 
-  // 1. Completeness
   const complete =
     Boolean(pkg) &&
     Boolean(pkg.packageId) &&
@@ -307,7 +303,6 @@ export function verifyAndPromoteBrainPackage(
     };
   }
 
-  // 2. Engine & Architecture compatibility
   const compatOk =
     pkg.engineVersion.split('.')[0] === ENGINE_VERSION.split('.')[0] &&
     pkg.architectureVersion === NN_ARCHITECTURE_VERSION &&
@@ -322,7 +317,6 @@ export function verifyAndPromoteBrainPackage(
       : `تعارض إصدار (${pkg.engineVersion} / ${pkg.architectureVersion}).`,
   });
 
-  // 3. Integrity Hash verification
   const expectedHash = computeBrainIntegrityHash(pkg.weights);
   const hashOk = expectedHash === pkg.integrityHash;
   checks.push({
@@ -333,7 +327,6 @@ export function verifyAndPromoteBrainPackage(
       : 'عدم تطابق التوقيع؛ يُحتمل تلف أو تعديل الأوزان.',
   });
 
-  // 4. Weights numerical structure
   const structCheck = validateBrainStructure(pkg.weights);
   checks.push({
     nameAr: 'سلامة مصفوفات الأوزان العصبية',
@@ -343,14 +336,14 @@ export function verifyAndPromoteBrainPackage(
       : structCheck.reason ?? 'خلل في الأوزان.',
   });
 
-  // 5. Runnable policy probe
   let policyRunnable = false;
   let policyDetail = '';
   if (structCheck.valid) {
     try {
       const probeInput = new Array<number>(INPUT_SIZE).fill(0.25);
       const mask = new Array<boolean>(OUTPUT_SIZE).fill(true);
-      const cloneWeights = JSON.parse(JSON.stringify(pkg.weights)) as AgentState['brain'];
+      const cloneWeights = structuredClone(pkg.weights);
+      ensureBrainOptimizerBuffers(cloneWeights);
       const probe = forwardBrain(cloneWeights, probeInput, 1.0, mask, () => 0.5);
       const probsSum = probe.probabilities.reduce((a, b) => a + b, 0);
       policyRunnable =
@@ -373,7 +366,6 @@ export function verifyAndPromoteBrainPackage(
     detailAr: policyDetail,
   });
 
-  // 6. Training quality gate check
   const evalOk = pkg.trainingMetadata.evaluationPassed;
   checks.push({
     nameAr: 'تقييم جودة النموذج المدرّب',

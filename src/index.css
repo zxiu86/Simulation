@@ -1,27 +1,10 @@
 @import "tailwindcss";
 
 @layer base {
-  :root {
-    color-scheme: dark;
-    --bg-canvas: #070B12;
-    --bg-panel: #0F1623;
-    --bg-elevated: #141D2E;
-    --border-hairline: #1E293B;
-    --accent-cyan: #06B6D4;
-    --accent-amber: #F59E0B;
-    --accent-emerald: #10B981;
-    --accent-rose: #F43F5E;
-  }
-
-  html {
-    font-family: 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
-    background-color: var(--bg-canvas);
-    color: #E2E8F0;
-  }
-
-  .font-mono-tabular {
-    font-family: 'IBM Plex Mono', monospace;
-    font-variant-numeric: tabular-nums;
+  body {
+    background-color: #070B12;
+    color: #E6EDF6;
+    font-family: system-ui, -apple-system, 'Segoe UI', Tahoma, Arial, sans-serif;
   }
 
   .tabular-nums {
@@ -29,18 +12,20 @@
   }
 }
 
-/* Custom subtle dark scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: #070B12;
 }
+
 ::-webkit-scrollbar-thumb {
   background: #1E293B;
   border-radius: 3px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }

@@ -72,7 +72,6 @@ export function createInitialPlantCatalog(): Record<string, PlantSpecies> {
 }
 
 function chooseBiome(x: number, y: number, rng: () => number): BiomeType {
-  // Create a natural river cutting diagonally across the 5 km^2 basin
   const riverDist = Math.abs(x - y);
   if (riverDist <= 1 && (x + y) % 2 === 0) return 'riverbank';
   if (riverDist === 0) return 'riverbank';
@@ -170,7 +169,7 @@ function buildAnimals(x: number, y: number, biome: BiomeType, rng: () => number)
   return list;
 }
 
-export function createInitialWorld(runId: string, seed = Date.now()): WorldState {
+export function createInitialWorld(runId: string, seed = 20250101): WorldState {
   const rng = createRng(seed);
   const plantCatalog = createInitialPlantCatalog();
   const allPlantIds = Object.keys(plantCatalog);
@@ -247,14 +246,16 @@ export function createInitialWorld(runId: string, seed = Date.now()): WorldState
   };
 }
 
-export function stepWorldEcology(world: WorldState): {
+export function stepWorldEcology(
+  world: WorldState,
+  rngFn: () => number = Math.random,
+): {
   totalConsumedEstimate: number;
   totalRegenerated: number;
 } {
   world.tick += 1;
-  world.worldDays = Number((world.tick / 12).toFixed(2)); // 12 ticks = 1 world day
+  world.worldDays = Number((world.tick / 12).toFixed(2));
 
-  // Natural seasonal cycle (no forced civilization shifts!)
   const seasonPhase = Math.floor((world.tick / 120) % 4);
   if (seasonPhase === 0) {
     world.season = 'temperate';
@@ -282,7 +283,6 @@ export function stepWorldEcology(world: WorldState): {
   const rainBoost = 0.5 + world.rainfall * 0.9;
 
   for (const sector of world.sectors) {
-    // Plant regeneration boosted by emergent plantedPlots if agents discovered tending plants
     const plotBonus = sector.plantedPlots * 2.5;
     const plantRegen = Math.min(
       sector.maxPlantSupply - sector.plantSupply,
@@ -304,20 +304,17 @@ export function stepWorldEcology(world: WorldState): {
       }
     }
 
-    // Animal population natural recovery (probabilistic logistic growth)
     for (const animal of sector.animals) {
       if (animal.count < animal.maxCount && world.tick % 8 === 0) {
-        if (animal.count >= 1 && Math.random() < 0.28) {
+        if (animal.count >= 1 && rngFn() < 0.28) {
           animal.count = Math.min(animal.maxCount, animal.count + 1);
           totalRegenerated += 1;
-        } else if (animal.count === 0 && world.tick % 40 === 0 && Math.random() < 0.2) {
-          // Wildlife migration from neighboring sectors
+        } else if (animal.count === 0 && world.tick % 40 === 0 && rngFn() < 0.2) {
           animal.count = 1;
         }
       }
     }
 
-    // Gradual raw resource replenishment
     if (world.tick % 10 === 0) {
       sector.woodSupply = Math.min(220, sector.woodSupply + 1.5);
       sector.fiberSupply = Math.min(180, sector.fiberSupply + 1.5);

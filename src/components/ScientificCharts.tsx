@@ -1,222 +1,209 @@
-import React, { useState } from 'react';
-import type { TelemetrySnapshot } from '../shared/types.ts';
+import React from 'react';
 
-interface SeriesConfig {
+export interface SeriesConfig {
   key: string;
-  labelAr: string;
+  label: string;
   color: string;
-  accessor: (pt: TelemetrySnapshot['history'][number]) => number;
 }
 
-export const TimeSeriesChart: React.FC<{
-  titleAr: string;
-  subtitleAr: string;
-  data: TelemetrySnapshot['history'];
+export function TimeSeriesChart<T extends Record<string, number>>({
+  data,
+  series,
+  height = 200,
+  xKey = 'tick',
+  title,
+}: {
+  data: T[];
   series: SeriesConfig[];
   height?: number;
-}> = ({ titleAr, subtitleAr, data, series, height = 210 }) => {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-  const width = 620;
-  const padX = 44;
-  const padY = 20;
-  const innerW = width - padX * 2;
-  const innerH = height - padY * 2;
+  xKey?: string;
+  title: string;
+}) {
+  const width = 640;
+  const padL = 44;
+  const padR = 16;
+  const padT = 14;
+  const padB = 26;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
 
-  const allValues = data.flatMap((pt) => series.map((s) => s.accessor(pt)));
-  const minVal = allValues.length > 0 ? Math.min(0, ...allValues) : 0;
-  const maxVal = allValues.length > 0 ? Math.max(1, ...allValues) : 100;
-  const range = Math.max(1e-4, maxVal - minVal);
+  const validData = data.slice(-120);
+  let minVal = Number.POSITIVE_INFINITY;
+  let maxVal = Number.NEGATIVE_INFINITY;
 
-  const getX = (idx: number) =>
-    data.length <= 1 ? padX : padX + (idx / (data.length - 1)) * innerW;
-  const getY = (val: number) => padY + innerH - ((val - minVal) / range) * innerH;
+  for (const row of validData) {
+    for (const s of series) {
+      const v = row[s.key];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+      }
+    }
+  }
 
-  const hoveredPoint = hoverIdx !== null && data[hoverIdx] ? data[hoverIdx] : null;
+  if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) {
+    minVal = 0;
+    maxVal = 100;
+  }
+  if (Math.abs(maxVal - minVal) < 1e-4) {
+    maxVal += 10;
+    minVal = Math.max(0, minVal - 10);
+  }
+
+  const yScale = (val: number) => {
+    const ratio = (val - minVal) / (maxVal - minVal);
+    return padT + plotH - ratio * plotH;
+  };
+
+  const xScale = (idx: number) => {
+    if (validData.length <= 1) return padL + plotW / 2;
+    return padL + (idx / (validData.length - 1)) * plotW;
+  };
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1];
 
   return (
-    <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-100">{titleAr}</h3>
-          <p className="text-xs text-slate-400 mt-0.5">{subtitleAr}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-300">
-          {series.map((s) => (
-            <span key={s.key} className="flex items-center gap-1.5">
-              <span
-                className="inline-block w-3 h-0.5"
-                style={{ backgroundColor: s.color }}
-              />
-              <span>{s.labelAr}</span>
-            </span>
-          ))}
+    <div className="bg-[#0F1623] border border-slate-800/90 rounded-lg p-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+        <h4 className="text-xs font-semibold text-slate-200">{title}</h4>
+        <div className="flex flex-wrap items-center gap-3">
+          {series.map((s) => {
+            const latest = validData.length > 0 ? validData[validData.length - 1][s.key] : 0;
+            return (
+              <div key={s.key} className="flex items-center gap-1.5 text-[11px] text-slate-300">
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-xs"
+                  style={{ backgroundColor: s.color }}
+                />
+                <span>{s.label}:</span>
+                <span className="font-mono tabular-nums text-slate-100 font-medium">
+                  {typeof latest === 'number' ? latest.toFixed(latest % 1 === 0 ? 0 : 2) : '—'}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {data.length === 0 ? (
-        <div className="h-44 flex items-center justify-center text-xs text-slate-500 border border-dashed border-slate-800 rounded">
-          بانتظار تسجيل نقاط القياس الزمنية من المحرك…
+      {validData.length < 2 ? (
+        <div
+          style={{ height }}
+          className="flex items-center justify-center text-xs text-slate-500 border border-dashed border-slate-800 rounded"
+        >
+          بانتظار تراكم نقاط القياس الزمنية...
         </div>
       ) : (
-        <div className="relative">
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            className="w-full h-auto select-none"
-            onMouseLeave={() => setHoverIdx(null)}
-          >
-            {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
-              const y = padY + innerH * (1 - frac);
-              const labelVal = minVal + range * frac;
-              return (
-                <g key={frac}>
-                  <line
-                    x1={padX}
-                    y1={y}
-                    x2={width - padX}
-                    y2={y}
-                    stroke="#1E293B"
-                    strokeDasharray="3 3"
-                  />
-                  <text
-                    x={padX - 6}
-                    y={y + 3}
-                    textAnchor="end"
-                    className="fill-slate-500 text-[10px] font-mono-tabular"
-                  >
-                    {Math.abs(labelVal) >= 100 ? Math.round(labelVal) : labelVal.toFixed(1)}
-                  </text>
-                </g>
-              );
-            })}
-
-            {series.map((s) => {
-              const pathD = data
-                .map((pt, idx) => {
-                  const x = getX(idx).toFixed(1);
-                  const y = getY(s.accessor(pt)).toFixed(1);
-                  return `${idx === 0 ? 'M' : 'L'}${x},${y}`;
-                })
-                .join(' ');
-              return (
-                <path
-                  key={s.key}
-                  d={pathD}
-                  fill="none"
-                  stroke={s.color}
-                  strokeWidth={2}
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible">
+          {gridLines.map((g) => {
+            const y = padT + g * plotH;
+            const labelVal = maxVal - g * (maxVal - minVal);
+            return (
+              <g key={g}>
+                <line
+                  x1={padL}
+                  y1={y}
+                  x2={width - padR}
+                  y2={y}
+                  stroke="#1E293B"
+                  strokeDasharray="3 3"
+                  strokeWidth={1}
                 />
-              );
-            })}
+                <text
+                  x={padL - 6}
+                  y={y + 3}
+                  textAnchor="end"
+                  fill="#64748B"
+                  fontSize="10"
+                  className="font-mono tabular-nums"
+                >
+                  {labelVal.toFixed(Math.abs(maxVal - minVal) < 5 ? 1 : 0)}
+                </text>
+              </g>
+            );
+          })}
 
-            {hoverIdx !== null && data[hoverIdx] && (
-              <line
-                x1={getX(hoverIdx)}
-                y1={padY}
-                x2={getX(hoverIdx)}
-                y2={height - padY}
-                stroke="#475569"
-                strokeWidth={1}
+          {series.map((s) => {
+            const points = validData
+              .map((row, idx) => `${xScale(idx).toFixed(1)},${yScale(row[s.key] ?? 0).toFixed(1)}`)
+              .join(' ');
+            return (
+              <polyline
+                key={s.key}
+                fill="none"
+                stroke={s.color}
+                strokeWidth={2}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                points={points}
               />
-            )}
+            );
+          })}
 
-            {data.map((_, idx) => (
-              <rect
-                key={idx}
-                x={getX(idx) - innerW / Math.max(1, data.length) / 2}
-                y={padY}
-                width={Math.max(4, innerW / Math.max(1, data.length))}
-                height={innerH}
-                fill="transparent"
-                onMouseEnter={() => setHoverIdx(idx)}
-              />
-            ))}
-          </svg>
+          <text
+            x={padL}
+            y={height - 6}
+            fill="#64748B"
+            fontSize="10"
+            className="font-mono tabular-nums"
+          >
+            T{validData[0][xKey] ?? 0}
+          </text>
+          <text
+            x={width - padR}
+            y={height - 6}
+            textAnchor="end"
+            fill="#64748B"
+            fontSize="10"
+            className="font-mono tabular-nums"
+          >
+            T{validData[validData.length - 1][xKey] ?? 0}
+          </text>
+        </svg>
+      )}
+    </div>
+  );
+}
 
-          {hoveredPoint && (
-            <div className="mt-2 flex flex-wrap items-center gap-4 text-xs font-mono-tabular text-slate-300 border-t border-slate-800/80 pt-2">
-              <span className="text-slate-400">الدورة: {hoveredPoint.tick}</span>
-              {series.map((s) => (
-                <span key={s.key} style={{ color: s.color }}>
-                  {s.labelAr}: {s.accessor(hoveredPoint)}
-                </span>
-              ))}
-            </div>
-          )}
+export function HorizontalDistributionBars({
+  title,
+  items,
+  accentClass = 'bg-cyan-500',
+}: {
+  title: string;
+  items: Array<{ label: string; value: number; subLabel?: string }>;
+  accentClass?: string;
+}) {
+  const maxVal = Math.max(1, ...items.map((i) => i.value));
+
+  return (
+    <div className="bg-[#0F1623] border border-slate-800/90 rounded-lg p-3.5">
+      <h4 className="text-xs font-semibold text-slate-200 mb-3">{title}</h4>
+      {items.length === 0 ? (
+        <p className="text-xs text-slate-500">لا توجد بيانات مسجلة حتى الآن.</p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => {
+            const pct = Math.min(100, Math.round((item.value / maxVal) * 100));
+            return (
+              <div key={item.label} className="space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-300 truncate max-w-[65%]">{item.label}</span>
+                  <span className="font-mono tabular-nums text-slate-200">
+                    {item.value}
+                    {item.subLabel ? ` (${item.subLabel})` : ''}
+                  </span>
+                </div>
+                <div className="h-1.5 bg-slate-900 rounded overflow-hidden border border-slate-800/70">
+                  <div
+                    className={`h-full ${accentClass} transition-all duration-300`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
-};
-
-const BIOME_AR: Record<string, string> = {
-  riverbank: 'ضفة نهر',
-  savanna: 'سافانا',
-  forest: 'غابة',
-  rocky_highland: 'مرتفعات صخرية',
-  marsh: 'مستنقع',
-  arid_steppe: 'سهوب جافة',
-};
-
-export const SectorEcologicalMap: React.FC<{
-  sectors: TelemetrySnapshot['environment']['sectors'];
-  onSelectSector?: (sector: TelemetrySnapshot['environment']['sectors'][number]) => void;
-  selectedKey?: string;
-}> = ({ sectors, onSelectSector, selectedKey }) => {
-  return (
-    <div className="bg-[#0F1623] border border-slate-800 rounded-md p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-100">
-            خريطة قطاعات العالم البيئية (5 كم² — شبكة 10×10)
-          </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
-            تمثيل ثنائي الأبعاد لتوزع الأفراد والمياه والنباتات والملاجئ داخل كل قطاع (0.05 كم² لكل خلية)
-          </p>
-        </div>
-        <div className="flex items-center gap-4 text-xs text-slate-400">
-          <span>أزرق: مياه</span>
-          <span>أخضر: غطاء نباتي</span>
-          <span>رقم: عدد الأفراد</span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-10 gap-1" dir="ltr">
-        {sectors.map((sec) => {
-          const isSelected = selectedKey === sec.key;
-          const plantIntensity = Math.min(1, sec.plantSupply / 260);
-          const hasWater = sec.waterVolume > 10;
-          const bgStyle = hasWater
-            ? `rgba(6, 182, 212, ${0.14 + Math.min(0.45, sec.waterVolume / 1200)})`
-            : `rgba(16, 185, 129, ${0.06 + plantIntensity * 0.28})`;
-
-          return (
-            <button
-              key={sec.key}
-              type="button"
-              onClick={() => onSelectSector?.(sec)}
-              title={`${sec.key} — ${BIOME_AR[sec.biome] ?? sec.biome} | أفراد: ${sec.agentsCount} | نبات: ${sec.plantSupply} | ماء: ${sec.waterVolume}`}
-              style={{ backgroundColor: bgStyle }}
-              className={`aspect-square rounded-sm border text-[11px] font-mono-tabular flex flex-col items-center justify-center transition-colors cursor-pointer ${
-                isSelected
-                  ? 'border-cyan-400 ring-1 ring-cyan-400'
-                  : sec.predatorsCount > 0
-                    ? 'border-amber-500/40 hover:border-amber-400'
-                    : 'border-slate-800 hover:border-slate-600'
-              }`}
-            >
-              <span className={sec.agentsCount > 0 ? 'text-slate-100 font-semibold' : 'text-slate-600'}>
-                {sec.agentsCount}
-              </span>
-              {(sec.sheltersBuilt > 0 || sec.foodCaches > 0) && (
-                <span className="text-[9px] text-amber-300 leading-none">
-                  {sec.sheltersBuilt > 0 ? 'م' : ''}
-                  {sec.foodCaches > 0 ? 'خ' : ''}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
+}

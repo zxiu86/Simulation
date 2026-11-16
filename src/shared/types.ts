@@ -60,20 +60,20 @@ export type KnowledgeCategory =
 
 export interface PlantSpecies {
   id: string;
-  localName: string; // descriptive botanical signature, not human knowledge
-  nutrition: number; // 0..45
-  toxicity: number; // 0..60
-  medicinalValue: number; // 0..25
+  localName: string;
+  nutrition: number;
+  toxicity: number;
+  medicinalValue: number;
   delayedOnsetTicks: number;
 }
 
 export interface WaterSource {
   id: string;
   kind: 'river' | 'spring' | 'pond' | 'stagnant_pool';
-  volume: number; // 0..1000
+  volume: number;
   maxVolume: number;
   regenerationRate: number;
-  contaminationRisk: number; // 0..1
+  contaminationRisk: number;
 }
 
 export interface AnimalEntity {
@@ -83,8 +83,8 @@ export interface AnimalEntity {
   count: number;
   maxCount: number;
   meatYield: number;
-  dangerLevel: number; // 0..1
-  difficulty: number; // 0..1
+  dangerLevel: number;
+  difficulty: number;
 }
 
 export interface WorldSector {
@@ -100,7 +100,7 @@ export interface WorldSector {
   stoneSupply: number;
   woodSupply: number;
   fiberSupply: number;
-  hazardLevel: number; // 0..1 environmental danger
+  hazardLevel: number;
   sheltersBuilt: number;
   foodCaches: number;
   waterCaches: number;
@@ -114,31 +114,31 @@ export interface WorldState {
   areaKm2: number;
   season: 'wet' | 'temperate' | 'dry' | 'harsh';
   temperatureC: number;
-  rainfall: number; // 0..1
-  climateStress: number; // 0..1
+  rainfall: number;
+  climateStress: number;
   sectors: WorldSector[];
   plantCatalog: Record<string, PlantSpecies>;
 }
 
 export interface PhysicalState {
-  hunger: number; // 0 (full) .. 100 (starving)
-  thirst: number; // 0 (hydrated) .. 100 (dehydrated)
-  health: number; // 0 .. 100
-  energy: number; // 0 .. 100
-  fatigue: number; // 0 .. 100
-  injury: number; // 0 .. 100
-  illness: number; // 0 .. 100
-  poison: number; // 0 .. 100
+  hunger: number;
+  thirst: number;
+  health: number;
+  energy: number;
+  fatigue: number;
+  injury: number;
+  illness: number;
+  poison: number;
   poisonTimer: number;
   pendingPoisonDose: number;
-  sleepNeed: number; // 0 .. 100
+  sleepNeed: number;
 }
 
 export interface PsychologicalState {
-  stress: number; // 0 .. 100
-  morale: number; // 0 .. 100
-  safetyFeeling: number; // 0 .. 100
-  loneliness: number; // 0 .. 100
+  stress: number;
+  morale: number;
+  safetyFeeling: number;
+  loneliness: number;
 }
 
 export interface AgentNeeds {
@@ -198,8 +198,8 @@ export interface LongTermMemorySummary {
 
 export interface SocialRelationship {
   targetId: string;
-  trust: number; // -1 .. 1
-  affinity: number; // -1 .. 1
+  trust: number;
+  affinity: number;
   interactions: number;
   cooperations: number;
   conflicts: number;
@@ -219,15 +219,20 @@ export interface NeuralBrainState {
   inputSize: number;
   hiddenSize: number;
   outputSize: number;
-  w1: number[]; // inputSize * hiddenSize
-  b1: number[]; // hiddenSize
-  wPolicy: number[]; // hiddenSize * outputSize
-  bPolicy: number[]; // outputSize
-  wValue: number[]; // hiddenSize
+  w1: number[];
+  b1: number[];
+  wPolicy: number[];
+  bPolicy: number[];
+  wValue: number[];
   bValue: number;
-  fisherImportance: number[]; // subset/compressed diagonal for continual learning
-  anchorWeights: number[]; // anchor for anti-forgetting regularization
+  fisherImportance: number[];
+  anchorWeights: number[];
   trainingSteps: number;
+  optimizerStep: number;
+  currentLearningRate: number;
+  momentumW1: number[];
+  momentumWPolicy: number[];
+  momentumWValue: number[];
   avgLoss: number;
   avgTdError: number;
   predictionAccuracy: number;
@@ -244,8 +249,8 @@ export interface RLStats {
   failedActions: number;
   rewardHackingFlags: number;
   replayUpdates: number;
-  retentionScore: number; // 0..1
-  forgettingRate: number; // 0..1
+  retentionScore: number;
+  forgettingRate: number;
 }
 
 export interface AgentIdentity {
@@ -362,7 +367,7 @@ export interface CivilizationKnowledgeItem {
   experimenterIds: string[];
   successCount: number;
   failureCount: number;
-  confidence: number; // 0..1
+  confidence: number;
   certaintyStatus: CertaintyStatus;
   lastTestedTick: number;
   stillActive: boolean;
@@ -383,39 +388,100 @@ export interface EmergentSymbol {
   confidence: number;
 }
 
+export type TelemetryEventType =
+  | 'AgentDecision'
+  | 'AgentAction'
+  | 'RewardReceived'
+  | 'LearningUpdate'
+  | 'SkillDiscovered'
+  | 'ExperienceRecorded'
+  | 'KnowledgeUpdated'
+  | 'FoodConsumed'
+  | 'WaterConsumed'
+  | 'HuntingStarted'
+  | 'HuntingSucceeded'
+  | 'HuntingFailed'
+  | 'AgentInjured'
+  | 'AgentBorn'
+  | 'AgentDied'
+  | 'PopulationChanged'
+  | 'RelationshipChanged'
+  | 'CommunicationObserved'
+  | 'GenerationChanged'
+  | 'ExtinctionDetected'
+  | 'RebirthStarted'
+  | 'CheckpointStarted'
+  | 'CheckpointCompleted'
+  | 'CheckpointFailed'
+  | 'TrainingPaused'
+  | 'TrainingResumed'
+  | 'TrainingCompleted'
+  | 'discovery'
+  | 'forage'
+  | 'water'
+  | 'hunt'
+  | 'injury'
+  | 'poison'
+  | 'cooperation'
+  | 'sharing'
+  | 'conflict'
+  | 'reconciliation'
+  | 'communication'
+  | 'social_learning'
+  | 'crafting'
+  | 'birth'
+  | 'death'
+  | 'crisis'
+  | 'extinction'
+  | 'recovery'
+  | 'training_promotion'
+  | 'reward_hacking_guard';
+
 export interface SimulationEvent {
   id: string;
+  eventId?: string;
+  simulationId?: string;
+  runId?: string;
+  sequence?: number;
   tick: number;
+  simulationTick?: number;
   timestamp: string;
-  type:
-    | 'discovery'
-    | 'forage'
-    | 'water'
-    | 'hunt'
-    | 'injury'
-    | 'poison'
-    | 'cooperation'
-    | 'sharing'
-    | 'conflict'
-    | 'reconciliation'
-    | 'communication'
-    | 'social_learning'
-    | 'crafting'
-    | 'birth'
-    | 'death'
-    | 'crisis'
-    | 'extinction'
-    | 'recovery'
-    | 'training_promotion'
-    | 'reward_hacking_guard';
+  generation?: number;
+  type: TelemetryEventType;
   agentId?: string;
   agentName?: string;
-  generation?: number;
   sectorKey?: string;
   titleAr: string;
   detailAr: string;
   severity: 'info' | 'positive' | 'warning' | 'critical';
+  payload?: Record<string, unknown>;
 }
+
+export type WorkflowOperationalStatus =
+  | 'Idle'
+  | 'Initializing'
+  | 'Running'
+  | 'Completed'
+  | 'Failed'
+  | 'Interrupted';
+
+export type SimOperationalStatus =
+  | 'Initializing'
+  | 'Running'
+  | 'Pausing'
+  | 'Paused'
+  | 'SavingCheckpoint'
+  | 'RestoringCheckpoint'
+  | 'Completed'
+  | 'Failed'
+  | 'Interrupted'
+  | 'Recovering';
+
+export type PersistenceOperationalStatus =
+  | 'Ready'
+  | 'SavingCheckpoint'
+  | 'RestoringCheckpoint'
+  | 'Error';
 
 export interface TimelineMilestone {
   id: string;
@@ -554,19 +620,46 @@ export interface PerformanceBenchmarks {
   sqliteDbBytes: number;
 }
 
+export interface ChunkDescriptor {
+  file: string;
+  rawBytes: number;
+  compressedBytes: number;
+  rawSha256: string;
+  compressedSha256: string;
+  itemCount: number;
+}
+
+export interface DomainManifestEntry {
+  domain: string;
+  domainSha256: string;
+  totalRawBytes: number;
+  totalCompressedBytes: number;
+  chunks: ChunkDescriptor[];
+}
+
 export interface CheckpointManifest {
+  format?: 'chunked-v2' | 'legacy-v1';
   checkpointId: string;
+  simulationId: string;
+  workflowRunId: string;
   schemaVersion: string;
   engineVersion: string;
+  serializationVersion: string;
   savedAt: string;
   runId: string;
   generationNumber: number;
   tick: number;
+  trainingStep: number;
   aliveCount: number;
   compatibilityRange: string;
+  domainCount: number;
+  chunkCount: number;
+  domains?: Record<string, DomainManifestEntry>;
+  rootChecksum: string;
   integrityHash: string;
   domainChecksums: Record<string, string>;
   compressedBytes: number;
+  complete: boolean;
   corrupted?: boolean;
 }
 
@@ -620,9 +713,14 @@ export interface AgentSummaryView {
 export interface TelemetrySnapshot {
   schemaVersion: string;
   engineVersion: string;
+  simulationId: string;
   runId: string;
+  workflowName: string;
+  startedAt: string;
+  lastSequence: number;
   serverTime: string;
-  simStatus: 'running' | 'paused' | 'recovering';
+  workflowStatus: WorkflowOperationalStatus;
+  simStatus: SimOperationalStatus;
   speedMultiplier: number;
   elapsedRealSeconds: number;
   tick: number;
@@ -755,8 +853,11 @@ export interface TelemetrySnapshot {
 
   persistenceStatus: {
     sqliteReady: boolean;
+    state: PersistenceOperationalStatus;
     lastCheckpointAt?: string;
     lastCheckpointId?: string;
+    lastRootChecksum?: string;
+    lastError?: string;
     totalCheckpoints: number;
     checkpoints: CheckpointManifest[];
   };

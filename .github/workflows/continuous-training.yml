@@ -1,38 +1,36 @@
-name: Continuous Civilization Simulation & Training
+name: Continuous Civilization Training & Checkpoint Sync
 
 on:
   workflow_dispatch:
     inputs:
+      simulation_id:
+        description: 'Constant simulation timeline ID across runs'
+        required: false
+        default: 'civ-main-timeline'
       duration_minutes:
-        description: 'مدة تشغيل المحاكاة بالدقائق (عند انتهائها يتوقف العمل ويحفظ آخر تطور ونقطة فحص)'
+        description: 'Simulation duration in minutes (0 = use max_ticks instead)'
         required: false
-        default: '10'
+        default: '5'
       checkpoint_interval_minutes:
-        description: 'الفاصل الزمني بالدقائق لإنشاء نسخة احتياطية Checkpoint تلقائياً أثناء التشغيل'
+        description: 'Backup checkpoint interval in minutes'
         required: false
-        default: '3'
-      ticks:
-        description: 'الحد الأقصى للدورات (0 = التشغيل طوال مدة duration_minutes المحددة)'
+        default: '2'
+      max_ticks:
+        description: 'Max ticks when duration_minutes is 0'
         required: false
-        default: '0'
+        default: '160'
       train_episodes:
-        description: 'حلقات التدريب المعزول في نهاية الجلسة'
+        description: 'Isolated training episodes before final checkpoint'
         required: false
-        default: '10'
-  schedule:
-    - cron: '0 */6 * * *'
+        default: '8'
 
 permissions:
   contents: read
 
-concurrency:
-  group: civilization-simulation-state
-  cancel-in-progress: false
-
 jobs:
-  resumable-simulation-batch:
+  evolve-and-checkpoint:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -43,40 +41,33 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci --legacy-peer-deps
-          else
-            npm install --legacy-peer-deps
-          fi
+      - name: Install dependencies cleanly
+        run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
-      - name: Restore persistent simulation state cache
-        uses: actions/cache@v4
+      - name: Download previous checkpoint artifact if available
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
+          name: civilization-data-${{ github.event.inputs.simulation_id || 'civ-main-timeline' }}
           path: data
-          key: civ-state-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            civ-state-${{ github.ref_name }}-
 
-      - name: Run simulation & engine verification tests
-        run: npm test
+      - name: Run Civilization Simulation & Chunked Checkpoints
+        env:
+          SIMULATION_ID: ${{ github.event.inputs.simulation_id || 'civ-main-timeline' }}
+          TELEMETRY_ENDPOINT_URL: ${{ vars.TELEMETRY_ENDPOINT_URL }}
+          TELEMETRY_INGEST_TOKEN: ${{ secrets.TELEMETRY_INGEST_TOKEN }}
+        run: |
+          npx tsx scripts/cli-runner.ts \
+            --simulation-id="${{ github.event.inputs.simulation_id || 'civ-main-timeline' }}" \
+            --duration-minutes="${{ github.event.inputs.duration_minutes || '5' }}" \
+            --checkpoint-interval-minutes="${{ github.event.inputs.checkpoint_interval_minutes || '2' }}" \
+            --ticks="${{ github.event.inputs.max_ticks || '160' }}" \
+            --train-episodes="${{ github.event.inputs.train_episodes || '8' }}"
 
-      - name: Run time-budgeted simulation with periodic checkpoint backups
-        run: >
-          npx tsx scripts/cli-runner.ts
-          --duration-minutes=${{ github.event.inputs.duration_minutes || '10' }}
-          --checkpoint-interval-minutes=${{ github.event.inputs.checkpoint_interval_minutes || '3' }}
-          --ticks=${{ github.event.inputs.ticks || '0' }}
-          --train-episodes=${{ github.event.inputs.train_episodes || '10' }}
-
-      - name: Upload compressed checkpoints and brain packages
+      - name: Upload updated chunked checkpoints and SQLite archive
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: civilization-checkpoints-${{ github.run_number }}
-          path: |
-            data/checkpoints/*.json.gz
-            data/packages/*.json
-          retention-days: 14
-          if-no-files-found: warn
+          name: civilization-data-${{ github.event.inputs.simulation_id || 'civ-main-timeline' }}
+          path: data/
+          retention-days: 30

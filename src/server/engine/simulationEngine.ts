@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import {
   AGENT_ACTIONS,
   ENGINE_VERSION,
@@ -16,30 +15,40 @@ import {
   type GenerationSummary,
   type KnowledgeCategory,
   type PerformanceBenchmarks,
+  type PersistenceOperationalStatus,
   type RecoveryEvent,
   type RecoveryPolicyMode,
+  type SimOperationalStatus,
   type SimulationEvent,
+  type TelemetryEventType,
   type TelemetryHistoryPoint,
   type TelemetrySnapshot,
   type TimelineMilestone,
   type TrainingSessionState,
+  type WorkflowOperationalStatus,
   type WorldSector,
   type WorldState,
 } from '../../shared/types.ts';
+import { computeCanonicalSha256 } from '../persistence/canonicalSerializer.ts';
 import { createAgent } from './agentFactory.ts';
 import { CollectiveMemorySystem } from './collectiveMemory.ts';
 import {
+  ensureBrainOptimizerBuffers,
   forwardBrain,
   HIDDEN_SIZE,
   INPUT_SIZE,
   OUTPUT_SIZE,
   updateBrainActorCritic,
 } from './neuralBrain.ts';
+import { SeededPRNG } from './prng.ts';
 import { createInitialWorld, stepWorldEcology } from './world.ts';
 
 const MAX_RECENT_EVENTS = 400;
 const MAX_HISTORY_POINTS = 240;
 const MAX_EPISODIC_MEMORY = 40;
+const MAX_ARCHIVED_DECEASED_AGENTS = 120;
+const MAX_AGENT_RELATIONSHIPS = 80;
+const MAX_AGENT_ENTITY_MEM = 40;
 const MAX_CONSECUTIVE_FAILED_RECOVERIES = 5;
 
 const ACTION_LABELS_AR: Record<AgentActionType, string> = {
@@ -78,6 +87,10 @@ function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
+export function computePayloadSha256(data: unknown): string {
+  return computeCanonicalSha256(data).sha256;
+}
+
 export interface SerializedEngineDomains {
   worldState: WorldState;
   agentsState: Array<Omit<AgentState, 'brain' | 'episodicMemory' | 'longTermMemory'>>;
@@ -99,8 +112,14 @@ export interface SerializedEngineDomains {
   recoveryEvents: RecoveryEvent[];
   preservedRevivalPool: AgentState[];
   history: TelemetryHistoryPoint[];
+  trainingState?: TrainingSessionState;
   meta: {
+    simulationId: string;
     runId: string;
+    workflowName: string;
+    startedAt: string;
+    eventSequence: number;
+    prngState: number;
     currentGeneration: number;
     recoveryPolicy: RecoveryPolicyMode;
     serialCounter: number;
@@ -111,6 +130,7 @@ export interface SerializedEngineDomains {
     consecutiveFailedRecoveries: number;
     lastRecoveryAttemptTick: number;
     milestoneFlags: Record<string, boolean>;
+    causesOfDeathTotals?: Record<string, number>;
     totalExperiencesRecorded: number;
     totalExperiencesReplayed: number;
     totalKnowledgeExchanges: number;
@@ -120,10 +140,21 @@ export interface SerializedEngineDomains {
 }
 
 export class CivilizationSimulationEngine {
+  public simulationId: string;
+  public runId: string;
+  public workflowName: string;
+  public startedAt: string;
+  public eventSequence = 0;
+  public prng: SeededPRNG;
+
   public world: WorldState;
   public agents: AgentState[] = [];
   public collectiveMemory: CollectiveMemorySystem;
-  public simStatus: 'running' | 'paused' | 'recovering' = 'paused';
+  public workflowStatus: WorkflowOperationalStatus = 'Idle';
+  public simStatus: SimOperationalStatus = 'Paused';
+  public persistenceState: PersistenceOperationalStatus = 'Ready';
+  public lastRootChecksum?: string;
+  public lastPersistenceError?: string;
   public speedMultiplier = 1;
   public elapsedRealSeconds = 0;
   public currentGeneration = 1;
@@ -144,8 +175,8 @@ export class CivilizationSimulationEngine {
   public preservedRevivalPool: AgentState[] = [];
   public history: TelemetryHistoryPoint[] = [];
   public milestoneFlags: Record<string, boolean> = {};
+  public causesOfDeathTotals: Record<string, number> = {};
 
-  // External references supplied by server / storage
   public sqliteReady = false;
   public checkpoints: CheckpointManifest[] = [];
   public trainingState: TrainingSessionState = {
@@ -167,7 +198,6 @@ export class CivilizationSimulationEngine {
   public sqliteDbBytes = 0;
   public latestCheckpointBytes = 0;
 
-  // Performance counters
   private lastDecisionDurationMs = 0;
   private decisionsPerSecond = 0;
   private experienceRecallTimeMs = 0;
@@ -175,17 +205,33 @@ export class CivilizationSimulationEngine {
   private lastRegenerationEstimate = 0;
   private pendingRecoveryAtTick: number | null = null;
   private crisisDiagnosticsAr: string[] = [];
+  private eventListener?: (event: SimulationEvent) => void;
 
-  constructor(runId?: string) {
-    const id = runId ?? `run_${Date.now()}`;
-    this.world = createInitialWorld(id);
+  constructor(options?: {
+    simulationId?: string;
+    runId?: string;
+    workflowName?: string;
+    seed?: number;
+  }) {
+    this.simulationId = options?.simulationId ?? process.env.SIMULATION_ID ?? 'civ-main-timeline';
+    this.runId = options?.runId ?? `run_${Date.now()}`;
+    this.workflowName = options?.workflowName ?? 'المرصد الرئيسي';
+    this.startedAt = new Date().toISOString();
+    this.prng = new SeededPRNG(options?.seed ?? 20250101);
+    this.world = createInitialWorld(this.runId, options?.seed ?? 20250101);
     this.collectiveMemory = new CollectiveMemorySystem();
     this.initializePopulation(INITIAL_POPULATION, 1, 'initial');
   }
 
-  public reset(newRunId?: string): void {
-    const id = newRunId ?? `run_${Date.now()}`;
-    this.world = createInitialWorld(id);
+  public setEventListener(listener: (event: SimulationEvent) => void): void {
+    this.eventListener = listener;
+  }
+
+  public reset(newRunId?: string, seed = Date.now()): void {
+    this.runId = newRunId ?? `run_${Date.now()}`;
+    this.startedAt = new Date().toISOString();
+    this.prng = new SeededPRNG(seed);
+    this.world = createInitialWorld(this.runId, seed);
     this.collectiveMemory = new CollectiveMemorySystem();
     this.agents = [];
     this.generationsMap.clear();
@@ -196,6 +242,7 @@ export class CivilizationSimulationEngine {
     this.preservedRevivalPool = [];
     this.history = [];
     this.milestoneFlags = {};
+    this.causesOfDeathTotals = {};
     this.currentGeneration = 1;
     this.serialCounter = 0;
     this.birthsCount = 0;
@@ -214,6 +261,7 @@ export class CivilizationSimulationEngine {
     generation: number,
     originType: AgentState['identity']['originType'],
   ): void {
+    const rngFn = () => this.prng.next();
     this.ensureGenerationEntry(generation, this.world.tick);
     for (let i = 0; i < count; i++) {
       const agent = createAgent({
@@ -222,6 +270,7 @@ export class CivilizationSimulationEngine {
         birthTick: this.world.tick,
         originType,
         ageStage: 'adult',
+        rngFn,
       });
       this.agents.push(agent);
       const gen = this.generationsMap.get(generation)!;
@@ -267,6 +316,14 @@ export class CivilizationSimulationEngine {
           `بداية الجيل ${generation}`,
           `ظهر الجيل ${generation} بعقول مستقلة وقدرة على الاستفادة من سجل التجارب التراكمي.`,
         );
+        this.emitEvent({
+          type: 'GenerationChanged',
+          generation,
+          titleAr: `انتقال إلى الجيل ${generation}`,
+          detailAr: `بدأت دورة الجيل ${generation} عند الدقيقة الزمنية (Tick) ${tick}.`,
+          severity: 'positive',
+          payload: { generation, tick },
+        });
       }
     }
     return gen;
@@ -294,16 +351,45 @@ export class CivilizationSimulationEngine {
     });
   }
 
-  private emitEvent(event: Omit<SimulationEvent, 'id' | 'tick' | 'timestamp'>): void {
-    this.events.unshift({
-      id: `evt_${this.world.tick}_${Math.random().toString(36).slice(2, 8)}`,
+  public emitEvent(
+    event: Omit<
+      SimulationEvent,
+      'id' | 'eventId' | 'simulationId' | 'runId' | 'sequence' | 'tick' | 'simulationTick' | 'timestamp'
+    >,
+    options?: { reservedSequence?: number },
+  ): SimulationEvent {
+    let seq: number;
+    if (typeof options?.reservedSequence === 'number') {
+      seq = options.reservedSequence;
+      if (seq > this.eventSequence) {
+        this.eventSequence = seq;
+      }
+    } else {
+      this.eventSequence += 1;
+      seq = this.eventSequence;
+    }
+    const eventId = `evt_${this.simulationId}_${seq}`;
+    const full: SimulationEvent = {
+      id: eventId,
+      eventId,
+      simulationId: this.simulationId,
+      runId: this.runId,
+      sequence: seq,
       tick: this.world.tick,
+      simulationTick: this.world.tick,
       timestamp: new Date().toISOString(),
+      generation: event.generation ?? this.currentGeneration,
       ...event,
-    });
+      payload: event.payload ?? {},
+    };
+    this.events.unshift(full);
     if (this.events.length > MAX_RECENT_EVENTS) {
       this.events.length = MAX_RECENT_EVENTS;
     }
+    if (this.eventListener) {
+      this.eventListener(full);
+    }
+    return full;
   }
 
   private getSector(x: number, y: number): WorldSector {
@@ -318,7 +404,11 @@ export class CivilizationSimulationEngine {
     );
   }
 
-  private buildObservationVector(agent: AgentState, sector: WorldSector, peers: AgentState[]): {
+  private buildObservationVector(
+    agent: AgentState,
+    sector: WorldSector,
+    peers: AgentState[],
+  ): {
     vec: number[];
     actionMask: boolean[];
     observationsAr: string[];
@@ -326,16 +416,40 @@ export class CivilizationSimulationEngine {
     const hasWater = sector.waterSource && sector.waterSource.volume > 2 ? 1 : 0;
     const waterQuery = sector.waterSource
       ? this.collectiveMemory.queryKnowledgeForAgent(`water_${sector.waterSource.kind}`)
-      : { known: false, confidence: 0.5, trials: 0, experimenters: 0, successCount: 0, failureCount: 0, certaintyStatus: 'unconfirmed' as const };
+      : {
+          known: false,
+          confidence: 0.5,
+          trials: 0,
+          experimenters: 0,
+          successCount: 0,
+          failureCount: 0,
+          certaintyStatus: 'unconfirmed' as const,
+        };
 
     const plantId = sector.plantSpeciesIds[0];
     const plantQuery = plantId
       ? this.collectiveMemory.queryKnowledgeForAgent(plantId)
-      : { known: false, confidence: 0.5, trials: 0, experimenters: 0, successCount: 0, failureCount: 0, certaintyStatus: 'unconfirmed' as const };
+      : {
+          known: false,
+          confidence: 0.5,
+          trials: 0,
+          experimenters: 0,
+          successCount: 0,
+          failureCount: 0,
+          certaintyStatus: 'unconfirmed' as const,
+        };
 
-    const preyCount = sector.animals.reduce((acc, a) => acc + (a.temperament !== 'predator' ? a.count : 0), 0);
-    const predCount = sector.animals.reduce((acc, a) => acc + (a.temperament === 'predator' ? a.count : 0), 0);
-    const hasChildPeer = peers.some((p) => p.ageStage === 'child' && (p.physical.hunger > 45 || p.physical.thirst > 45));
+    const preyCount = sector.animals.reduce(
+      (acc, a) => acc + (a.temperament !== 'predator' ? a.count : 0),
+      0,
+    );
+    const predCount = sector.animals.reduce(
+      (acc, a) => acc + (a.temperament === 'predator' ? a.count : 0),
+      0,
+    );
+    const hasChildPeer = peers.some(
+      (p) => p.ageStage === 'child' && (p.physical.hunger > 45 || p.physical.thirst > 45),
+    );
 
     let avgPeerTrust = 0;
     if (peers.length > 0) {
@@ -376,8 +490,12 @@ export class CivilizationSimulationEngine {
       if (act === 'forage_plant') return sector.plantSupply >= 4 || agent.inventory.food > 0;
       if (act === 'drink_water') return hasWater === 1 || agent.inventory.water > 0;
       if (act === 'hunt_prey') return preyCount > 0 || predCount > 0;
-      if (act === 'observe_peer' || act === 'cooperate_task' || act === 'reconcile_or_bond') return peers.length > 0;
-      if (act === 'share_resource') return peers.length > 0 && (agent.inventory.food > 0 || agent.inventory.water > 0);
+      if (act === 'observe_peer' || act === 'cooperate_task' || act === 'reconcile_or_bond') {
+        return peers.length > 0;
+      }
+      if (act === 'share_resource') {
+        return peers.length > 0 && (agent.inventory.food > 0 || agent.inventory.water > 0);
+      }
       if (act === 'tend_child') return hasChildPeer;
       return true;
     });
@@ -394,10 +512,10 @@ export class CivilizationSimulationEngine {
 
   public step(): void {
     const t0 = performance.now();
-    const { totalRegenerated } = stepWorldEcology(this.world);
+    const rngFn = () => this.prng.next();
+    const { totalRegenerated } = stepWorldEcology(this.world, rngFn);
     this.lastRegenerationEstimate = totalRegenerated;
 
-    // Handle pending extinction recovery if scheduled
     const aliveBefore = this.agents.filter((a) => a.alive);
     if (aliveBefore.length === 0) {
       if (this.pendingRecoveryAtTick === null) {
@@ -412,10 +530,15 @@ export class CivilizationSimulationEngine {
 
     let stepConsumed = 0;
     let stepDecisions = 0;
+    let stepRewardSum = 0;
+    let stepLossSum = 0;
+    let representativeAgent: AgentState | null = null;
+    let representativeAction: AgentActionType | null = null;
+    let representativeReward = 0;
+    let representativeTdError = 0;
     const newBabies: AgentState[] = [];
 
     for (const agent of aliveBefore) {
-      // 1. Update biological clock, metabolism & delayed effects
       this.advanceAgentBiology(agent);
       if (!agent.alive) continue;
 
@@ -423,7 +546,6 @@ export class CivilizationSimulationEngine {
       const peers = this.getAgentsInSector(sector.key, agent.identity.id);
       const obsBefore = this.buildObservationVector(agent, sector, peers);
 
-      //Snapshot physical/psych before action
       const physBefore = {
         hunger: Number(agent.physical.hunger.toFixed(1)),
         thirst: Number(agent.physical.thirst.toFixed(1)),
@@ -436,24 +558,30 @@ export class CivilizationSimulationEngine {
       };
       const activeNeeds = this.extractActiveNeeds(agent);
 
-      // 2. Policy decision via independent Neural Brain
-      const explorationTemp = clamp(0.7 + (1 - agent.rlStats.retentionScore) * 0.4 + agent.personality.boldness * 0.25, 0.55, 1.3);
-      const forward = forwardBrain(agent.brain, obsBefore.vec, explorationTemp, obsBefore.actionMask);
+      const explorationTemp = clamp(
+        0.7 + (1 - agent.rlStats.retentionScore) * 0.4 + agent.personality.boldness * 0.25,
+        0.55,
+        1.3,
+      );
+      const forward = forwardBrain(
+        agent.brain,
+        obsBefore.vec,
+        explorationTemp,
+        obsBefore.actionMask,
+        rngFn,
+      );
       stepDecisions += 1;
       agent.rlStats.totalDecisions += 1;
       agent.lastAction = forward.chosenAction;
       agent.lastActionReason = forward.actionReasonAr;
 
-      // Track repetition for Anti-Reward-Hacking
       const prevCount = agent.longTermMemory.recentActionCounts[forward.chosenAction] ?? 0;
       agent.longTermMemory.recentActionCounts[forward.chosenAction] = prevCount + 1;
 
-      // 3. Execute action in environment
       const outcome = this.executeAgentAction(agent, forward.chosenAction, sector, peers, newBabies);
       stepConsumed += outcome.consumedAmount;
       agent.lastActionOutcome = outcome.immediateOutcomeAr;
 
-      // 4. Multi-dimensional Reward & Anti-Reward-Hacking guard
       let reward = outcome.shortTermReward + outcome.longTermReward;
       const repeatThreshold = 6;
       if (
@@ -462,7 +590,6 @@ export class CivilizationSimulationEngine {
         outcome.resourcesDelta.water === 0 &&
         !outcome.success
       ) {
-        // Penalize sterile repetitive behavior (Reward Hacking mitigation)
         reward -= 0.45;
         agent.rlStats.rewardHackingFlags += 1;
         if (agent.rlStats.rewardHackingFlags % 5 === 1) {
@@ -491,7 +618,6 @@ export class CivilizationSimulationEngine {
         agent.rlStats.failedActions += 1;
       }
 
-      // 5. Observe next state & update independent RL Brain
       const nextSector = this.getSector(agent.sectorX, agent.sectorY);
       const nextPeers = this.getAgentsInSector(nextSector.key, agent.identity.id);
       const obsAfter = this.buildObservationVector(agent, nextSector, nextPeers);
@@ -507,12 +633,20 @@ export class CivilizationSimulationEngine {
         lr,
       );
 
+      stepRewardSum += reward;
+      stepLossSum += trainStats.loss;
+      if (!representativeAgent) {
+        representativeAgent = agent;
+        representativeAction = forward.chosenAction;
+        representativeReward = reward;
+        representativeTdError = trainStats.tdError;
+      }
+
       agent.rlStats.retentionScore = Number(
         (agent.rlStats.retentionScore * 0.94 + trainStats.retentionDelta * 0.06).toFixed(3),
       );
       agent.rlStats.forgettingRate = Number((1 - agent.rlStats.retentionScore).toFixed(3));
 
-      // 6. Store personal episodic memory
       agent.episodicMemory.push({
         tick: this.world.tick,
         sectorKey: sector.key,
@@ -528,13 +662,22 @@ export class CivilizationSimulationEngine {
       }
       if (outcome.success && !agent.longTermMemory.knownSafeEntities.includes(outcome.entityKey)) {
         agent.longTermMemory.knownSafeEntities.push(outcome.entityKey);
+        if (agent.longTermMemory.knownSafeEntities.length > MAX_AGENT_ENTITY_MEM) {
+          agent.longTermMemory.knownSafeEntities.shift();
+        }
         agent.longTermMemory.consolidatedLessons += 1;
-      } else if (!outcome.success && outcome.damages > 5 && !agent.longTermMemory.knownDangerousEntities.includes(outcome.entityKey)) {
+      } else if (
+        !outcome.success &&
+        outcome.damages > 5 &&
+        !agent.longTermMemory.knownDangerousEntities.includes(outcome.entityKey)
+      ) {
         agent.longTermMemory.knownDangerousEntities.push(outcome.entityKey);
+        if (agent.longTermMemory.knownDangerousEntities.length > MAX_AGENT_ENTITY_MEM) {
+          agent.longTermMemory.knownDangerousEntities.shift();
+        }
         agent.longTermMemory.consolidatedLessons += 1;
       }
 
-      // 7. Record into Collective Experience & Generational Learning DB
       if (outcome.recordCollective) {
         const recorded = this.collectiveMemory.recordExperience({
           id: `exp_${this.world.tick}_${agent.identity.id}_${stepDecisions}`,
@@ -582,22 +725,25 @@ export class CivilizationSimulationEngine {
             agent.identity.id,
           );
           this.emitEvent({
-            type: 'discovery',
+            type: 'KnowledgeUpdated',
             agentId: agent.identity.id,
             agentName: agent.identity.name,
             generation: agent.generation,
             sectorKey: sector.key,
-            titleAr: `اكتشاف جديد: ${recorded.knowledge.titleAr}`,
+            titleAr: `اكتشاف وتحديث معرفي: ${recorded.knowledge.titleAr}`,
             detailAr: outcome.immediateOutcomeAr,
             severity: outcome.success ? 'positive' : 'warning',
+            payload: {
+              entityKey: recorded.knowledge.entityKey,
+              confidence: recorded.knowledge.confidence,
+            },
           });
         }
       }
 
-      // 8. Continual Learning via Prioritized Experience Replay (every 6 ticks per agent)
       if (this.world.tick % 6 === 0 && this.collectiveMemory.experiences.length >= 6) {
         const tRecall0 = performance.now();
-        const replayBatch = this.collectiveMemory.samplePrioritizedReplayBatch(2);
+        const replayBatch = this.collectiveMemory.samplePrioritizedReplayBatch(2, rngFn);
         this.experienceRecallTimeMs = Number((performance.now() - tRecall0).toFixed(3));
         for (const exp of replayBatch) {
           if (exp.stateVector.length === INPUT_SIZE) {
@@ -605,7 +751,7 @@ export class CivilizationSimulationEngine {
               agent.brain,
               exp.stateVector,
               exp.actionIndex,
-              exp.reward * 0.45, // attenuated offline replay prevents overriding personal policy
+              exp.reward * 0.45,
               exp.stateVector,
               false,
               lr * 0.4,
@@ -617,11 +763,9 @@ export class CivilizationSimulationEngine {
         }
       }
 
-      // 9. Natural reproduction check (no forced reproduction cheats!)
       this.attemptNaturalReproduction(agent, peers, newBabies);
     }
 
-    // Add newborns
     for (const baby of newBabies) {
       this.agents.push(baby);
       this.birthsCount += 1;
@@ -639,6 +783,53 @@ export class CivilizationSimulationEngine {
       );
     }
 
+    // Emit high-value batched telemetry events per tick (prevents event flood while preserving causal observability)
+    if (representativeAgent && representativeAction && this.world.tick % 2 === 0) {
+      this.emitEvent({
+        type: 'AgentDecision',
+        agentId: representativeAgent.identity.id,
+        agentName: representativeAgent.identity.name,
+        generation: representativeAgent.generation,
+        sectorKey: `${representativeAgent.sectorX},${representativeAgent.sectorY}`,
+        titleAr: `قرار عصبي: ${ACTION_LABELS_AR[representativeAction]}`,
+        detailAr: representativeAgent.lastActionReason ?? 'اختيار سياسة عصبية مستقلة',
+        severity: 'info',
+        payload: {
+          action: representativeAction,
+          decisionsInTick: stepDecisions,
+        },
+      });
+      this.emitEvent({
+        type: 'LearningUpdate',
+        agentId: representativeAgent.identity.id,
+        agentName: representativeAgent.identity.name,
+        generation: representativeAgent.generation,
+        titleAr: `تحديث التعلم بالتعزيز (Tick ${this.world.tick})`,
+        detailAr: `متوسط المكافأة ${(stepRewardSum / Math.max(1, stepDecisions)).toFixed(3)} · متوسط الخسارة ${(stepLossSum / Math.max(1, stepDecisions)).toFixed(4)}`,
+        severity: representativeReward >= 0 ? 'positive' : 'warning',
+        payload: {
+          reward: Number(representativeReward.toFixed(3)),
+          tdError: Number(representativeTdError.toFixed(3)),
+          avgLoss: Number((stepLossSum / Math.max(1, stepDecisions)).toFixed(4)),
+          optimizerStep: representativeAgent.brain.optimizerStep,
+        },
+      });
+    }
+
+    if (newBabies.length > 0) {
+      this.emitEvent({
+        type: 'PopulationChanged',
+        generation: this.currentGeneration,
+        titleAr: `تغير تعداد السكان (+${newBabies.length})`,
+        detailAr: `السكان الأحياء الآن: ${this.agents.filter((a) => a.alive).length}`,
+        severity: 'positive',
+        payload: {
+          alive: this.agents.filter((a) => a.alive).length,
+          birthsDelta: newBabies.length,
+        },
+      });
+    }
+
     this.lastConsumptionEstimate = stepConsumed;
     this.collectiveMemory.updateActiveUsage(this.world.tick);
     this.updateGenerationMetrics();
@@ -646,11 +837,15 @@ export class CivilizationSimulationEngine {
 
     const elapsedMs = performance.now() - t0;
     this.lastDecisionDurationMs = Number(elapsedMs.toFixed(2));
-    this.decisionsPerSecond = elapsedMs > 0 ? Math.round((stepDecisions / elapsedMs) * 1000) : stepDecisions * 100;
+    this.decisionsPerSecond =
+      elapsedMs > 0 ? Math.round((stepDecisions / elapsedMs) * 1000) : stepDecisions * 100;
     this.elapsedRealSeconds += Number((elapsedMs / 1000).toFixed(3));
 
     if (this.world.tick % 4 === 0 || this.history.length === 0) {
       this.recordHistorySnapshot();
+    }
+    if (this.world.tick % 16 === 0) {
+      this.compactDeceasedAgents();
     }
   }
 
@@ -669,16 +864,20 @@ export class CivilizationSimulationEngine {
     }
 
     const meta = 0.8 + agent.identity.geneticTraits.metabolismRate * 0.6;
-    const shelterProtection = this.getSector(agent.sectorX, agent.sectorY).sheltersBuilt > 0 ? 0.72 : 1.0;
+    const shelterProtection =
+      this.getSector(agent.sectorX, agent.sectorY).sheltersBuilt > 0 ? 0.72 : 1.0;
 
     agent.physical.hunger = clamp(agent.physical.hunger + 1.45 * meta, 0, 100);
-    agent.physical.thirst = clamp(agent.physical.thirst + 1.85 * meta * (1 + this.world.climateStress * 0.35), 0, 100);
+    agent.physical.thirst = clamp(
+      agent.physical.thirst + 1.85 * meta * (1 + this.world.climateStress * 0.35),
+      0,
+      100,
+    );
     agent.physical.fatigue = clamp(agent.physical.fatigue + 1.1, 0, 100);
     agent.physical.sleepNeed = clamp(agent.physical.sleepNeed + 1.25, 0, 100);
     agent.physical.energy = clamp(agent.physical.energy - 0.9 * meta, 0, 100);
     agent.psychological.loneliness = clamp(agent.psychological.loneliness + 0.65, 0, 100);
 
-    // Process delayed plant/water poisoning!
     if (agent.physical.poisonTimer > 0) {
       agent.physical.poisonTimer -= 1;
       if (agent.physical.poisonTimer === 0 && agent.physical.pendingPoisonDose > 0) {
@@ -711,7 +910,6 @@ export class CivilizationSimulationEngine {
       }
     }
 
-    // Active physiological penalties (Hunger & Thirst genuinely impair health & survival!)
     let healthDelta = 0;
     let deathCause: string | null = null;
 
@@ -752,16 +950,14 @@ export class CivilizationSimulationEngine {
       if (!deathCause && shelterProtection > 0.9) deathCause = 'قساوة المناخ ونقص المأوى';
     }
 
-    // Natural aging mortality
     if (agent.ageTicks > 560) {
       const oldAgeRisk = (agent.ageTicks - 560) * 0.0025;
-      if (Math.random() < oldAgeRisk) {
+      if (this.prng.next() < oldAgeRisk) {
         healthDelta -= 100;
         deathCause = 'الشيخوخة والوفاة الطبيعية';
       }
     }
 
-    // Natural recovery when well-fed and hydrated
     if (agent.physical.hunger < 45 && agent.physical.thirst < 45 && agent.physical.poison < 5) {
       healthDelta += 1.4;
     }
@@ -778,9 +974,9 @@ export class CivilizationSimulationEngine {
     agent.deathTick = this.world.tick;
     agent.causeOfDeath = causeOfDeath;
     this.deathsCount += 1;
+    this.causesOfDeathTotals[causeOfDeath] = (this.causesOfDeathTotals[causeOfDeath] ?? 0) + 1;
 
-    // Save snapshot into revival pool (bounded to 120 most experienced individuals)
-    this.preservedRevivalPool.push(JSON.parse(JSON.stringify(agent)) as AgentState);
+    this.preservedRevivalPool.push(structuredClone(agent));
     if (this.preservedRevivalPool.length > 120) {
       this.preservedRevivalPool.sort((a, b) => b.rlStats.totalReward - a.rlStats.totalReward);
       this.preservedRevivalPool.length = 120;
@@ -794,7 +990,7 @@ export class CivilizationSimulationEngine {
     }
 
     this.emitEvent({
-      type: 'death',
+      type: 'AgentDied',
       agentId: agent.identity.id,
       agentName: agent.identity.name,
       generation: agent.generation,
@@ -802,7 +998,21 @@ export class CivilizationSimulationEngine {
       titleAr: `وفاة فرد: ${agent.identity.name}`,
       detailAr: `توفي في الجيل ${agent.generation} عند عمر ${agent.ageTicks} دورة. السبب: ${causeOfDeath}.`,
       severity: 'critical',
+      payload: { causeOfDeath, ageTicks: agent.ageTicks },
     });
+  }
+
+  private compactDeceasedAgents(): void {
+    const alive: AgentState[] = [];
+    const deceased: AgentState[] = [];
+    for (const a of this.agents) {
+      if (a.alive) alive.push(a);
+      else deceased.push(a);
+    }
+    if (deceased.length <= MAX_ARCHIVED_DECEASED_AGENTS) return;
+    deceased.sort((a, b) => (b.deathTick ?? 0) - (a.deathTick ?? 0));
+    deceased.length = MAX_ARCHIVED_DECEASED_AGENTS;
+    this.agents = [...alive, ...deceased];
   }
 
   private executeAgentAction(
@@ -849,9 +1059,8 @@ export class CivilizationSimulationEngine {
         entityKey = 'stored_food_ration';
         immediateOutcomeAr = `استهلك ${agent.identity.name} غذاءً محفوظاً وخفف الجوع بمقدار ${hungerDrop.toFixed(0)}.`;
       } else if (sector.plantSupply >= 4) {
-        // Choose plant species: agents gradually avoid plants flagged as dangerous in collective memory
         let chosenPlantId =
-          sector.plantSpeciesIds[Math.floor(Math.random() * sector.plantSpeciesIds.length)];
+          sector.plantSpeciesIds[this.prng.nextInt(sector.plantSpeciesIds.length)];
         for (const pid of sector.plantSpeciesIds) {
           const q = this.collectiveMemory.queryKnowledgeForAgent(pid);
           if (q.known && q.certaintyStatus === 'confirmed' && q.confidence >= 0.65) {
@@ -877,7 +1086,7 @@ export class CivilizationSimulationEngine {
             agent.physical.poisonTimer = plant.delayedOnsetTicks;
             immediateOutcomeAr = `جرّب ${plant.localName}: شبع فوري (${hungerDrop.toFixed(0)}) مع أثر سمي غير ظاهر بعد.`;
             shortTermReward = hungerDrop * 0.025;
-            success = true; // Initial observation seems okay until delayed onset triggers!
+            success = true;
           } else {
             agent.physical.poison = clamp(agent.physical.poison + plant.toxicity, 0, 100);
             damages = plant.toxicity;
@@ -908,6 +1117,18 @@ export class CivilizationSimulationEngine {
             `تحقق ${agent.identity.name} من سلامة ${plant.localName} كمصدر غذاء آمن.`,
             agent.identity.id,
           );
+          if (this.world.tick % 10 === 0) {
+            this.emitEvent({
+              type: 'FoodConsumed',
+              agentId: agent.identity.id,
+              agentName: agent.identity.name,
+              generation: agent.generation,
+              sectorKey: sector.key,
+              titleAr: `استهلاك غذاء: ${plant.localName}`,
+              detailAr: immediateOutcomeAr,
+              severity: 'positive',
+            });
+          }
         }
       } else {
         shortTermReward = -0.2;
@@ -935,8 +1156,8 @@ export class CivilizationSimulationEngine {
         agent.physical.thirst = clamp(agent.physical.thirst - thirstDrop, 0, 100);
         agent.skills.waterFinding = clamp(agent.skills.waterFinding + 0.03, 0, 1);
 
-        if (Math.random() < ws.contaminationRisk * (1 - agent.skills.waterFinding * 0.4)) {
-          const ill = 18 + Math.random() * 18;
+        if (this.prng.next() < ws.contaminationRisk * (1 - agent.skills.waterFinding * 0.4)) {
+          const ill = 18 + this.prng.next() * 18;
           agent.physical.illness = clamp(agent.physical.illness + ill, 0, 100);
           damages = ill;
           shortTermReward = thirstDrop * 0.015 - 0.7;
@@ -960,16 +1181,18 @@ export class CivilizationSimulationEngine {
             `اكتشف ${agent.identity.name} مصدر مياه (${ws.kind}) وخفّض العطش بنجاح.`,
             agent.identity.id,
           );
-          this.emitEvent({
-            type: 'water',
-            agentId: agent.identity.id,
-            agentName: agent.identity.name,
-            generation: agent.generation,
-            sectorKey: sector.key,
-            titleAr: 'الوصول لمصدر مياه',
-            detailAr: immediateOutcomeAr,
-            severity: 'positive',
-          });
+          if (this.world.tick % 12 === 0) {
+            this.emitEvent({
+              type: 'WaterConsumed',
+              agentId: agent.identity.id,
+              agentName: agent.identity.name,
+              generation: agent.generation,
+              sectorKey: sector.key,
+              titleAr: 'الوصول لمصدر مياه',
+              detailAr: immediateOutcomeAr,
+              severity: 'positive',
+            });
+          }
         }
       } else {
         shortTermReward = -0.25;
@@ -1001,7 +1224,7 @@ export class CivilizationSimulationEngine {
         agent.physical.energy = clamp(agent.physical.energy - 11, 0, 100);
         agent.physical.fatigue = clamp(agent.physical.fatigue + 9, 0, 100);
 
-        if (Math.random() < successProb) {
+        if (this.prng.next() < successProb) {
           target.count -= 1;
           consumedAmount = target.meatYield;
           const hungerDrop = Math.min(agent.physical.hunger, target.meatYield);
@@ -1034,7 +1257,7 @@ export class CivilizationSimulationEngine {
             );
           }
           this.emitEvent({
-            type: 'hunt',
+            type: 'HuntingSucceeded',
             agentId: agent.identity.id,
             agentName: agent.identity.name,
             generation: agent.generation,
@@ -1044,9 +1267,8 @@ export class CivilizationSimulationEngine {
             severity: 'positive',
           });
         } else {
-          // Real injury risk from hunting predators or rough pursuit!
-          if (Math.random() < target.dangerLevel) {
-            const inj = 12 + Math.random() * 24;
+          if (this.prng.next() < target.dangerLevel) {
+            const inj = 12 + this.prng.next() * 24;
             agent.physical.injury = clamp(agent.physical.injury + inj, 0, 100);
             agent.physical.health = clamp(agent.physical.health - inj * 0.35, 0, 100);
             damages = inj;
@@ -1054,7 +1276,7 @@ export class CivilizationSimulationEngine {
             longTermReward = -0.4;
             immediateOutcomeAr = `فشل الصيد وأصيب الصياد بجروح (${inj.toFixed(0)}%) أثناء مواجهة ${target.speciesKey}.`;
             this.emitEvent({
-              type: 'injury',
+              type: 'AgentInjured',
               agentId: agent.identity.id,
               agentName: agent.identity.name,
               generation: agent.generation,
@@ -1072,13 +1294,12 @@ export class CivilizationSimulationEngine {
       }
     } else if (action === 'observe_peer') {
       category = 'cooperation';
-      const peer = peers[Math.floor(Math.random() * peers.length)];
+      const peer = peers[this.prng.nextInt(peers.length)];
       entityKey = 'social_observation';
       if (peer) {
         recordCollective = true;
         this.observationalLearnings += 1;
         this.collectiveMemory.totalKnowledgeExchanges += 1;
-        // Transfer small skill boost & expose to peer's top knowledge/vocabulary (NOT full brain cloning!)
         const skillKeys = Object.keys(agent.skills) as Array<keyof AgentState['skills']>;
         let bestSkill: keyof AgentState['skills'] = 'foraging';
         for (const k of skillKeys) {
@@ -1087,14 +1308,12 @@ export class CivilizationSimulationEngine {
         if (peer.skills[bestSkill] > agent.skills[bestSkill]) {
           agent.skills[bestSkill] = clamp(agent.skills[bestSkill] + 0.035, 0, 1);
         }
-        // Adopt one knowledge reference by observation
         for (const kid of peer.knowledgeIds) {
           if (!agent.knowledgeIds.includes(kid)) {
             agent.knowledgeIds.push(kid);
             break;
           }
         }
-        // Learn vocabulary by exposure
         for (const [mKey, entry] of Object.entries(peer.vocabulary)) {
           if (!agent.vocabulary[mKey]) {
             agent.vocabulary[mKey] = {
@@ -1151,7 +1370,6 @@ export class CivilizationSimulationEngine {
         this.updateRelationship(partner, agent, 0.1, 0.09, true, false);
         agent.psychological.loneliness = Math.max(0, agent.psychological.loneliness - 14);
         agent.psychological.safetyFeeling = clamp(agent.psychological.safetyFeeling + 8, 0, 100);
-        // Cooperative gathering/water haul yields mutual bonus
         if (sector.plantSupply >= 6) {
           sector.plantSupply -= 5;
           agent.inventory.food = Math.min(5, agent.inventory.food + 1);
@@ -1214,8 +1432,8 @@ export class CivilizationSimulationEngine {
       }
     } else if (action === 'craft_attempt') {
       recordCollective = true;
-      // Emergent open-ended innovation strictly from local materials & skill practice!
-      const hasMats = sector.stoneSupply >= 4 && (sector.woodSupply >= 3 || sector.fiberSupply >= 3);
+      const hasMats =
+        sector.stoneSupply >= 4 && (sector.woodSupply >= 3 || sector.fiberSupply >= 3);
       if (!hasMats) {
         category = 'tool';
         entityKey = 'craft_insufficient_materials';
@@ -1228,7 +1446,7 @@ export class CivilizationSimulationEngine {
         agent.physical.energy = clamp(agent.physical.energy - 8, 0, 100);
         agent.skills.crafting = clamp(agent.skills.crafting + 0.045, 0, 1);
 
-        const roll = Math.random();
+        const roll = this.prng.next();
         const mastery = agent.skills.crafting;
         if (roll < 0.22 + mastery * 0.55) {
           success = true;
@@ -1299,7 +1517,7 @@ export class CivilizationSimulationEngine {
           }
 
           this.emitEvent({
-            type: 'crafting',
+            type: 'SkillDiscovered',
             agentId: agent.identity.id,
             agentName: agent.identity.name,
             generation: agent.generation,
@@ -1317,7 +1535,6 @@ export class CivilizationSimulationEngine {
       }
     } else if (action === 'emit_signal') {
       category = 'signal_vocabulary';
-      // Emergent communication grounded in local context
       const contextMeaning =
         sector.animals.some((a) => a.temperament === 'predator' && a.count > 0)
           ? { key: 'predator_warning', ar: 'تحذير من مفترس أو خطر' }
@@ -1354,7 +1571,7 @@ export class CivilizationSimulationEngine {
         recordCollective = true;
         let adopters = 0;
         for (const peer of peers.slice(0, 4)) {
-          if (Math.random() < 0.65) {
+          if (this.prng.next() < 0.65) {
             adopters += 1;
             const hadIt = Boolean(peer.vocabulary[contextMeaning.key]);
             if (!hadIt) {
@@ -1397,6 +1614,18 @@ export class CivilizationSimulationEngine {
             `ارتبط الرمز الصوتي "${token}" بمعنى "${contextMeaning.ar}" عبر التفاعل بين الأفراد.`,
             agent.identity.id,
           );
+          if (this.world.tick % 12 === 0) {
+            this.emitEvent({
+              type: 'CommunicationObserved',
+              agentId: agent.identity.id,
+              agentName: agent.identity.name,
+              generation: agent.generation,
+              sectorKey: sector.key,
+              titleAr: `تواصل بالإشارة "${token}"`,
+              detailAr: immediateOutcomeAr,
+              severity: 'info',
+            });
+          }
         }
       } else {
         shortTermReward = -0.12;
@@ -1437,7 +1666,7 @@ export class CivilizationSimulationEngine {
         immediateOutcomeAr = 'لا يوجد أطفال قريبون للرعاية.';
       }
     } else if (action === 'reconcile_or_bond') {
-      const peer = peers[Math.floor(Math.random() * peers.length)];
+      const peer = peers[this.prng.nextInt(peers.length)];
       if (peer) {
         recordCollective = true;
         const rel = agent.relationships[peer.identity.id];
@@ -1446,7 +1675,7 @@ export class CivilizationSimulationEngine {
           this.updateRelationship(peer, agent, 0.22, 0.18, true, false);
           immediateOutcomeAr = `تمت مصالحة بين ${agent.identity.name} و${peer.identity.name}.`;
           this.emitEvent({
-            type: 'reconciliation',
+            type: 'RelationshipChanged',
             agentId: agent.identity.id,
             agentName: agent.identity.name,
             generation: agent.generation,
@@ -1455,8 +1684,7 @@ export class CivilizationSimulationEngine {
             detailAr: immediateOutcomeAr,
             severity: 'positive',
           });
-        } else if (Math.random() < 0.12 && agent.psychological.stress > 55) {
-          // Occasional realistic resource/social conflict
+        } else if (this.prng.next() < 0.12 && agent.psychological.stress > 55) {
           this.updateRelationship(agent, peer, -0.22, -0.2, false, true);
           this.updateRelationship(peer, agent, -0.22, -0.2, false, true);
           shortTermReward = -0.25;
@@ -1513,21 +1741,20 @@ export class CivilizationSimulationEngine {
         longTermReward = 0.5;
         success = true;
         entityKey = 'health_self_care';
-        immediateOutcomeAr = `عالج إصاباته/مرضه وحسّن حالته الصحية.`;
+        immediateOutcomeAr = 'عالج إصاباته/مرضه وحسّن حالته الصحية.';
       } else {
         shortTermReward = -0.05;
         entityKey = 'health_unneeded';
         immediateOutcomeAr = 'الحالة الجسدية لا تستدعي علاجاً.';
       }
     } else if (action === 'move_sector' || action === 'explore') {
-      // Move toward adjacent sector (weighted by scarcity vs exploration)
       const dirs = [
         [1, 0],
         [-1, 0],
         [0, 1],
         [0, -1],
       ];
-      const [dx, dy] = dirs[Math.floor(Math.random() * dirs.length)];
+      const [dx, dy] = dirs[this.prng.nextInt(dirs.length)];
       const nx = clamp(agent.sectorX + dx, 0, GRID_SIZE - 1);
       const ny = clamp(agent.sectorY + dy, 0, GRID_SIZE - 1);
       agent.sectorX = nx;
@@ -1583,6 +1810,21 @@ export class CivilizationSimulationEngine {
         lastTick: this.world.tick,
       };
       agent.relationships[target.identity.id] = rel;
+      const relKeys = Object.keys(agent.relationships);
+      if (relKeys.length > MAX_AGENT_RELATIONSHIPS) {
+        let oldestKey = relKeys[0];
+        let oldestTick = agent.relationships[oldestKey]?.lastTick ?? Number.POSITIVE_INFINITY;
+        for (const rk of relKeys) {
+          const lt = agent.relationships[rk]?.lastTick ?? 0;
+          if (lt < oldestTick) {
+            oldestTick = lt;
+            oldestKey = rk;
+          }
+        }
+        if (oldestKey && oldestKey !== target.identity.id) {
+          delete agent.relationships[oldestKey];
+        }
+      }
     }
     rel.trust = clamp(rel.trust + trustDelta, -1, 1);
     rel.affinity = clamp(rel.affinity + affinityDelta, -1, 1);
@@ -1608,7 +1850,6 @@ export class CivilizationSimulationEngine {
     ) {
       return;
     }
-    // Carrying capacity safeguard for CPU/RAM stability only at very high population while allowing realistic growth
     const aliveCount = this.agents.filter((a) => a.alive).length + newBabies.length;
     if (aliveCount >= 260) return;
 
@@ -1622,7 +1863,7 @@ export class CivilizationSimulationEngine {
     );
     if (!mate) return;
 
-    if (Math.random() < 0.045) {
+    if (this.prng.next() < 0.045) {
       const babyGen = Math.max(agent.generation, mate.generation) + 1;
       if (babyGen > this.currentGeneration) {
         this.currentGeneration = babyGen;
@@ -1637,6 +1878,7 @@ export class CivilizationSimulationEngine {
         sectorY: agent.sectorY,
         parentA: agent,
         parentB: mate,
+        rngFn: () => this.prng.next(),
       });
       agent.offspringCount += 1;
       mate.offspringCount += 1;
@@ -1647,7 +1889,7 @@ export class CivilizationSimulationEngine {
       newBabies.push(baby);
 
       this.emitEvent({
-        type: 'birth',
+        type: 'AgentBorn',
         agentId: baby.identity.id,
         agentName: baby.identity.name,
         generation: babyGen,
@@ -1674,7 +1916,7 @@ export class CivilizationSimulationEngine {
     for (const gen of this.generationsMap.values()) {
       const members = this.agents.filter((a) => a.generation === gen.generation);
       if (members.length === 0) continue;
-      gen.totalAgents = members.length;
+      gen.totalAgents = Math.max(gen.totalAgents, members.length);
       gen.aliveCount = members.filter((m) => m.alive).length;
       const totalLife = members.reduce((s, m) => s + m.ageTicks, 0);
       const totalReward = members.reduce((s, m) => s + m.rlStats.totalReward, 0);
@@ -1711,10 +1953,15 @@ export class CivilizationSimulationEngine {
     this.crisisDiagnosticsAr = [];
 
     if (risk === 'decline' || risk === 'critical' || risk === 'near_extinction') {
-      const avgHunger = alive.reduce((s, a) => s + a.physical.hunger, 0) / Math.max(1, alive.length);
-      const avgThirst = alive.reduce((s, a) => s + a.physical.thirst, 0) / Math.max(1, alive.length);
+      const avgHunger =
+        alive.reduce((s, a) => s + a.physical.hunger, 0) / Math.max(1, alive.length);
+      const avgThirst =
+        alive.reduce((s, a) => s + a.physical.thirst, 0) / Math.max(1, alive.length);
       const totalPlants = this.world.sectors.reduce((s, sec) => s + sec.plantSupply, 0);
-      const totalWater = this.world.sectors.reduce((s, sec) => s + (sec.waterSource?.volume ?? 0), 0);
+      const totalWater = this.world.sectors.reduce(
+        (s, sec) => s + (sec.waterSource?.volume ?? 0),
+        0,
+      );
 
       if (avgHunger > 65 || totalPlants < 1500) {
         this.crisisDiagnosticsAr.push('نقص حاد في الغذاء أو إجهاد النباتات في عدة قطاعات');
@@ -1741,9 +1988,11 @@ export class CivilizationSimulationEngine {
     }
 
     if (alive.length === 0 && this.pendingRecoveryAtTick === null) {
-      // Steps 1-6 of Extinction Protocol immediately upon reaching 0
       const totalPlants = this.world.sectors.reduce((s, sec) => s + sec.plantSupply, 0);
-      const totalWater = this.world.sectors.reduce((s, sec) => s + (sec.waterSource?.volume ?? 0), 0);
+      const totalWater = this.world.sectors.reduce(
+        (s, sec) => s + (sec.waterSource?.volume ?? 0),
+        0,
+      );
       const totalAnimals = this.world.sectors.reduce(
         (s, sec) => s + sec.animals.reduce((x, y) => x + y.count, 0),
         0,
@@ -1776,7 +2025,10 @@ export class CivilizationSimulationEngine {
         recoveryAttempted: false,
       };
       this.extinctionRecords.push(extRecord);
-      this.simStatus = 'recovering';
+      if (this.extinctionRecords.length > 80) {
+        this.extinctionRecords.shift();
+      }
+      this.simStatus = 'Recovering';
 
       this.addTimelineMilestone(
         `extinction_${this.extinctionRecords.length}`,
@@ -1787,7 +2039,7 @@ export class CivilizationSimulationEngine {
       );
 
       this.emitEvent({
-        type: 'extinction',
+        type: 'ExtinctionDetected',
         generation: this.currentGeneration,
         titleAr: 'حدث انقراض جماعي — تفعيل بروتوكول الحفظ والاستمرارية',
         detailAr: `وصل السكان إلى صفر. حُفظت قاعدة التجارب والمعرفة وأوزان العقول. الأسباب: ${extRecord.rootCausesAr.join('، ')}.`,
@@ -1801,7 +2053,7 @@ export class CivilizationSimulationEngine {
   public executeExtinctionRecovery(forcedPolicy?: RecoveryPolicyMode): RecoveryEvent | null {
     const policy = forcedPolicy ?? this.recoveryPolicy;
     if (this.consecutiveFailedRecoveries >= MAX_CONSECUTIVE_FAILED_RECOVERIES) {
-      this.simStatus = 'paused';
+      this.simStatus = 'Paused';
       this.emitEvent({
         type: 'crisis',
         generation: this.currentGeneration,
@@ -1821,14 +2073,22 @@ export class CivilizationSimulationEngine {
     this.lastRecoveryAttemptTick = this.world.tick;
     this.pendingRecoveryAtTick = null;
 
+    this.emitEvent({
+      type: 'RebirthStarted',
+      generation: newGen,
+      titleAr: `بدء بروتوكول Rebirth (الجيل ${newGen})`,
+      detailAr: `السياسة المعتمدة: ${policy === 'revive_preserved_individuals' ? 'إحياء العقول المحفوظة' : 'إنشاء جيل جديد باستمرارية المعرفة'}.`,
+      severity: 'info',
+    });
+
     let restoredCount = 0;
     let notesAr = '';
 
     if (policy === 'revive_preserved_individuals' && this.preservedRevivalPool.length > 0) {
-      // Revive original preserved individuals keeping their exact identity, personal memory & weights
       const toRevive = this.preservedRevivalPool.slice(0, 40);
       for (const saved of toRevive) {
-        const clone: AgentState = JSON.parse(JSON.stringify(saved)) as AgentState;
+        const clone = structuredClone(saved);
+        ensureBrainOptimizerBuffers(clone.brain);
         clone.alive = true;
         clone.deathTick = undefined;
         clone.causeOfDeath = undefined;
@@ -1846,8 +2106,8 @@ export class CivilizationSimulationEngine {
       }
       notesAr = `استعادة ${restoredCount} فرداً محفوظاً بهوياتهم وذاكرتهم وأوزانهم العصبية الأصلية دون محو التاريخ السابق.`;
     } else {
-      // Spawn new generation with fresh independent brains & access to collective knowledge
       const spawnCount = 60;
+      const rngFn = () => this.prng.next();
       this.ensureGenerationEntry(newGen, this.world.tick);
       for (let i = 0; i < spawnCount; i++) {
         const newAgent = createAgent({
@@ -1856,6 +2116,7 @@ export class CivilizationSimulationEngine {
           birthTick: this.world.tick,
           originType: 'recovery_new',
           ageStage: 'adult',
+          rngFn,
         });
         this.agents.push(newAgent);
         const gen = this.generationsMap.get(newGen)!;
@@ -1879,6 +2140,9 @@ export class CivilizationSimulationEngine {
       notesAr,
     };
     this.recoveryEvents.push(recoveryEvt);
+    if (this.recoveryEvents.length > 80) {
+      this.recoveryEvents.shift();
+    }
     if (latestExt) {
       latestExt.recoveryAttempted = true;
       latestExt.recoveryId = recoveryEvt.id;
@@ -1886,7 +2150,7 @@ export class CivilizationSimulationEngine {
 
     if (recoveryEvt.success) {
       this.consecutiveFailedRecoveries = 0;
-      this.simStatus = 'running';
+      this.simStatus = 'Running';
       this.addTimelineMilestone(
         `recovery_${this.recoveryEvents.length}`,
         this.world.tick,
@@ -1924,13 +2188,15 @@ export class CivilizationSimulationEngine {
       originType: 'isolated_promoted',
       ageStage: 'adult',
       customName: `${pkg.identityTemplate.suggestedName}`,
+      rngFn: () => this.prng.next(),
     });
-    agent.brain = JSON.parse(JSON.stringify(pkg.weights)) as AgentState['brain'];
+    agent.brain = structuredClone(pkg.weights);
+    ensureBrainOptimizerBuffers(agent.brain);
     agent.personality = { ...pkg.identityTemplate.personality };
     agent.identity.geneticTraits = { ...pkg.identityTemplate.geneticTraits };
     agent.skills = { ...pkg.learnedSkills };
     agent.knowledgeIds = [...pkg.knowledgeRefs];
-    agent.episodicMemory = JSON.parse(JSON.stringify(pkg.memoryState.slice(-20)));
+    agent.episodicMemory = structuredClone(pkg.memoryState.slice(-20));
     this.agents.push(agent);
 
     const gen = this.ensureGenerationEntry(this.currentGeneration, this.world.tick);
@@ -1959,8 +2225,7 @@ export class CivilizationSimulationEngine {
     const avgThirst = alive.reduce((s, a) => s + a.physical.thirst, 0) / n;
     const avgReward =
       this.agents.reduce((s, a) => s + a.rlStats.totalReward, 0) / Math.max(1, this.agents.length);
-    const retentionScore =
-      alive.reduce((s, a) => s + a.rlStats.retentionScore, 0) / n;
+    const retentionScore = alive.reduce((s, a) => s + a.rlStats.retentionScore, 0) / n;
     const totalPlants = this.world.sectors.reduce((s, sec) => s + sec.plantSupply, 0);
     const totalWater = this.world.sectors.reduce(
       (s, sec) => s + (sec.waterSource?.volume ?? 0),
@@ -2028,7 +2293,6 @@ export class CivilizationSimulationEngine {
     const avgRetention = alive.reduce((s, a) => s + a.rlStats.retentionScore, 0) / nAlive;
     const rewardHackingFlags = this.agents.reduce((s, a) => s + a.rlStats.rewardHackingFlags, 0);
 
-    // Strategy diversity: distinct dominant last actions across alive agents / total actions
     const actionDist = new Set(alive.map((a) => a.lastAction).filter(Boolean));
     const strategyDiversity = Number((actionDist.size / AGENT_ACTIONS.length).toFixed(3));
     const actionDistribution: Record<string, number> = {};
@@ -2042,9 +2306,13 @@ export class CivilizationSimulationEngine {
     const avgTdError = alive.reduce((s, a) => s + a.brain.avgTdError, 0) / nAlive;
     const avgPolicyEntropy = alive.reduce((s, a) => s + a.brain.policyEntropy, 0) / nAlive;
     const parametersPerBrain =
-      INPUT_SIZE * HIDDEN_SIZE + HIDDEN_SIZE + HIDDEN_SIZE * OUTPUT_SIZE + OUTPUT_SIZE + HIDDEN_SIZE + 1;
+      INPUT_SIZE * HIDDEN_SIZE +
+      HIDDEN_SIZE +
+      HIDDEN_SIZE * OUTPUT_SIZE +
+      OUTPUT_SIZE +
+      HIDDEN_SIZE +
+      1;
 
-    // Social metrics
     let totalRels = 0;
     let posRels = 0;
     let negRels = 0;
@@ -2063,11 +2331,15 @@ export class CivilizationSimulationEngine {
       Object.values(sectorOccupancy).filter((c) => c >= 3).length,
     );
 
-    // Causes of death
-    const causesOfDeath: Record<string, number> = {};
-    for (const a of this.agents) {
-      if (!a.alive && a.causeOfDeath) {
-        causesOfDeath[a.causeOfDeath] = (causesOfDeath[a.causeOfDeath] ?? 0) + 1;
+    const causesOfDeath: Record<string, number> =
+      Object.keys(this.causesOfDeathTotals).length > 0
+        ? { ...this.causesOfDeathTotals }
+        : {};
+    if (Object.keys(causesOfDeath).length === 0) {
+      for (const a of this.agents) {
+        if (!a.alive && a.causeOfDeath) {
+          causesOfDeath[a.causeOfDeath] = (causesOfDeath[a.causeOfDeath] ?? 0) + 1;
+        }
       }
     }
 
@@ -2078,7 +2350,10 @@ export class CivilizationSimulationEngine {
     ).length;
 
     const totalPlants = this.world.sectors.reduce((s, sec) => s + sec.plantSupply, 0);
-    const totalWater = this.world.sectors.reduce((s, sec) => s + (sec.waterSource?.volume ?? 0), 0);
+    const totalWater = this.world.sectors.reduce(
+      (s, sec) => s + (sec.waterSource?.volume ?? 0),
+      0,
+    );
     const totalAnimals = this.world.sectors.reduce(
       (s, sec) => s + sec.animals.reduce((x, y) => x + y.count, 0),
       0,
@@ -2103,7 +2378,8 @@ export class CivilizationSimulationEngine {
         stress: Number(a.psychological.stress.toFixed(1)),
         totalReward: Number(a.rlStats.totalReward.toFixed(2)),
         totalDecisions: a.rlStats.totalDecisions,
-        actionSuccessRate: totalAct > 0 ? Number((a.rlStats.successfulActions / totalAct).toFixed(3)) : 0,
+        actionSuccessRate:
+          totalAct > 0 ? Number((a.rlStats.successfulActions / totalAct).toFixed(3)) : 0,
         retentionScore: a.rlStats.retentionScore,
         forgettingRate: a.rlStats.forgettingRate,
         skillsSum: Number(
@@ -2126,8 +2402,13 @@ export class CivilizationSimulationEngine {
     return {
       schemaVersion: SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
-      runId: this.world.runId,
+      simulationId: this.simulationId,
+      runId: this.runId,
+      workflowName: this.workflowName,
+      startedAt: this.startedAt,
+      lastSequence: this.eventSequence,
       serverTime: new Date().toISOString(),
+      workflowStatus: this.workflowStatus,
       simStatus: this.simStatus,
       speedMultiplier: this.speedMultiplier,
       elapsedRealSeconds: Number(this.elapsedRealSeconds.toFixed(1)),
@@ -2137,9 +2418,9 @@ export class CivilizationSimulationEngine {
       recoveryPolicy: this.recoveryPolicy,
 
       population: {
-        totalCreated: this.agents.length,
+        totalCreated: Math.max(this.serialCounter, this.agents.length),
         alive: alive.length,
-        deceased,
+        deceased: Math.max(this.deathsCount, deceased),
         births: this.birthsCount,
         deaths: this.deathsCount,
         children: alive.filter((a) => a.ageStage === 'child').length,
@@ -2175,7 +2456,7 @@ export class CivilizationSimulationEngine {
       mindsAndLearning: {
         activeBrains: alive.length,
         savedBrains: this.preservedRevivalPool.length,
-        deceasedBrains: deceased,
+        deceasedBrains: Math.max(this.deathsCount, deceased),
         restoredBrains: this.restoredBrainsCount,
         neuralNetworksCount: this.agents.length,
         totalTrainingSteps,
@@ -2205,7 +2486,7 @@ export class CivilizationSimulationEngine {
           outputSize: OUTPUT_SIZE,
           parametersPerBrain,
           activationFunction: 'tanh (مخفية) + Softmax (سياسة) + Value Critic',
-          continualLearningMethod: 'EWC Fisher Diagonal + Prioritized Experience Replay',
+          continualLearningMethod: 'EWC Fisher Diagonal + Momentum + Prioritized Experience Replay',
           avgLoss: Number(avgLoss.toFixed(4)),
           avgTdError: Number(avgTdError.toFixed(4)),
           avgPolicyEntropy: Number(avgPolicyEntropy.toFixed(3)),
@@ -2288,56 +2569,90 @@ export class CivilizationSimulationEngine {
 
       persistenceStatus: {
         sqliteReady: this.sqliteReady,
+        state: this.persistenceState,
         lastCheckpointAt: latestCp?.savedAt,
         lastCheckpointId: latestCp?.checkpointId,
+        lastRootChecksum: this.lastRootChecksum ?? latestCp?.rootChecksum,
+        lastError: this.lastPersistenceError,
         totalCheckpoints: this.checkpoints.length,
         checkpoints: this.checkpoints.slice(0, 12),
       },
 
-      knowledgeItems: this.collectiveMemory.getKnowledgeArray(),
-      recentExperiences: this.collectiveMemory.experiences.slice(-60).reverse(),
-      generations: Array.from(this.generationsMap.values()).sort(
-        (a, b) => b.generation - a.generation,
-      ),
-      timeline: [...this.timeline].sort((a, b) => a.tick - b.tick),
-      recentEvents: this.events.slice(0, 150),
+      knowledgeItems: this.collectiveMemory.getKnowledgeArray().slice(0, 80),
+      recentExperiences: this.collectiveMemory.experiences.slice(-40).reverse(),
+      generations: Array.from(this.generationsMap.values())
+        .sort((a, b) => a.generation - b.generation)
+        .slice(-40),
+      timeline: this.timeline.slice(-120),
+      recentEvents: this.events.slice(0, 80),
       agents: agentsSummary,
       history: this.history,
       training: this.trainingState,
-      packages: this.brainPackages,
+      packages: this.brainPackages.slice(0, 20),
       benchmarks: this.getBenchmarks(),
     };
   }
 
+  public getAgentDetail(agentId: string): AgentState | null {
+    return this.agents.find((a) => a.identity.id === agentId) ?? null;
+  }
+
+  public getGenerationDetail(genNum: number): {
+    summary: GenerationSummary | null;
+    members: AgentSummaryView[];
+    knowledgeItems: ReturnType<CollectiveMemorySystem['getKnowledgeArray']>;
+  } {
+    const summary = this.generationsMap.get(genNum) ?? null;
+    const members = this.buildTelemetrySnapshot().agents.filter((a) => a.generation === genNum);
+    const knowledgeItems = this.collectiveMemory
+      .getKnowledgeArray()
+      .filter((k) => k.discovererGeneration === genNum);
+    return { summary, members, knowledgeItems };
+  }
+
+  /**
+   * Snapshot Barrier: Synchronously exports a mutually consistent domain snapshot
+   * at the exact current (tick, eventSequence, prngState, weights, replayBuffer).
+   */
   public exportSeparatedDomains(): SerializedEngineDomains {
+    const worldState = structuredClone(this.world);
     const agentsState: SerializedEngineDomains['agentsState'] = [];
     const neuralWeights: SerializedEngineDomains['neuralWeights'] = {};
     const personalMemories: SerializedEngineDomains['personalMemories'] = {};
 
     for (const a of this.agents) {
       const { brain, episodicMemory, longTermMemory, ...rest } = a;
-      agentsState.push(rest);
-      neuralWeights[a.identity.id] = brain;
-      personalMemories[a.identity.id] = { episodicMemory, longTermMemory };
+      agentsState.push(structuredClone(rest));
+      neuralWeights[a.identity.id] = structuredClone(brain);
+      personalMemories[a.identity.id] = structuredClone({
+        episodicMemory,
+        longTermMemory,
+      });
     }
 
     return {
-      worldState: this.world,
+      worldState,
       agentsState,
       neuralWeights,
       personalMemories,
-      collectiveExperiences: this.collectiveMemory.experiences,
-      civilizationKnowledge: this.collectiveMemory.getKnowledgeArray(),
-      symbols: this.collectiveMemory.getSymbolsArray(),
-      generations: Array.from(this.generationsMap.values()),
-      eventLogs: this.events,
-      timeline: this.timeline,
-      extinctionRecords: this.extinctionRecords,
-      recoveryEvents: this.recoveryEvents,
-      preservedRevivalPool: this.preservedRevivalPool,
-      history: this.history,
+      collectiveExperiences: structuredClone(this.collectiveMemory.experiences),
+      civilizationKnowledge: structuredClone(this.collectiveMemory.getKnowledgeArray()),
+      symbols: structuredClone(this.collectiveMemory.getSymbolsArray()),
+      generations: structuredClone(Array.from(this.generationsMap.values())),
+      eventLogs: structuredClone(this.events.slice(0, 200)),
+      timeline: structuredClone(this.timeline),
+      extinctionRecords: structuredClone(this.extinctionRecords),
+      recoveryEvents: structuredClone(this.recoveryEvents),
+      preservedRevivalPool: structuredClone(this.preservedRevivalPool),
+      history: structuredClone(this.history),
+      trainingState: structuredClone(this.trainingState),
       meta: {
-        runId: this.world.runId,
+        simulationId: this.simulationId,
+        runId: this.runId,
+        workflowName: this.workflowName,
+        startedAt: this.startedAt,
+        eventSequence: this.eventSequence,
+        prngState: this.prng.getState(),
         currentGeneration: this.currentGeneration,
         recoveryPolicy: this.recoveryPolicy,
         serialCounter: this.serialCounter,
@@ -2347,7 +2662,8 @@ export class CivilizationSimulationEngine {
         observationalLearnings: this.observationalLearnings,
         consecutiveFailedRecoveries: this.consecutiveFailedRecoveries,
         lastRecoveryAttemptTick: this.lastRecoveryAttemptTick,
-        milestoneFlags: this.milestoneFlags,
+        milestoneFlags: structuredClone(this.milestoneFlags),
+        causesOfDeathTotals: structuredClone(this.causesOfDeathTotals),
         totalExperiencesRecorded: this.collectiveMemory.totalExperiencesRecorded,
         totalExperiencesReplayed: this.collectiveMemory.totalExperiencesReplayed,
         totalKnowledgeExchanges: this.collectiveMemory.totalKnowledgeExchanges,
@@ -2357,82 +2673,115 @@ export class CivilizationSimulationEngine {
     };
   }
 
-  public loadFromSeparatedDomains(domains: SerializedEngineDomains): void {
-    this.world = domains.worldState;
+  public loadFromSeparatedDomains(
+    domains: SerializedEngineDomains,
+    options?: { overrideRunId?: string },
+  ): void {
+    this.world = structuredClone(domains.worldState);
+    if (options?.overrideRunId) {
+      this.runId = options.overrideRunId;
+      this.world.runId = options.overrideRunId;
+    } else if (domains.meta?.runId) {
+      this.runId = domains.meta.runId;
+    }
+
+    if (domains.meta?.simulationId) {
+      this.simulationId = domains.meta.simulationId;
+    }
+    if (domains.meta?.workflowName) {
+      this.workflowName = domains.meta.workflowName;
+    }
+    if (domains.meta?.startedAt) {
+      this.startedAt = domains.meta.startedAt;
+    }
+    if (typeof domains.meta?.eventSequence === 'number') {
+      this.eventSequence = domains.meta.eventSequence;
+    }
+    if (typeof domains.meta?.prngState === 'number') {
+      this.prng.setState(domains.meta.prngState);
+    }
+
     this.agents = domains.agentsState.map((base) => {
-      const brain = domains.neuralWeights[base.identity.id];
-      const mem = domains.personalMemories[base.identity.id];
-      return {
-        ...base,
-        brain,
-        episodicMemory: mem?.episodicMemory ?? [],
-        longTermMemory: mem?.longTermMemory ?? {
-          knownSafeEntities: [],
-          knownDangerousEntities: [],
-          preferredSectors: [],
-          consolidatedLessons: 0,
-          recentActionCounts: {},
+      const brain = structuredClone(domains.neuralWeights[base.identity.id]);
+      ensureBrainOptimizerBuffers(brain);
+      const mem = structuredClone(
+        domains.personalMemories[base.identity.id] ?? {
+          episodicMemory: [],
+          longTermMemory: {
+            knownSafeEntities: [],
+            knownDangerousEntities: [],
+            preferredSectors: [],
+            consolidatedLessons: 0,
+            recentActionCounts: {},
+          },
         },
+      );
+      return {
+        ...structuredClone(base),
+        brain,
+        episodicMemory: mem.episodicMemory,
+        longTermMemory: mem.longTermMemory,
       };
     });
 
     this.collectiveMemory = new CollectiveMemorySystem();
-    this.collectiveMemory.experiences = domains.collectiveExperiences ?? [];
+    this.collectiveMemory.experiences = structuredClone(domains.collectiveExperiences ?? []);
+    this.collectiveMemory.knowledgeMap.clear();
     for (const k of domains.civilizationKnowledge ?? []) {
-      this.collectiveMemory.knowledgeMap.set(k.entityKey, k);
+      this.collectiveMemory.knowledgeMap.set(k.entityKey, structuredClone(k));
     }
+    this.collectiveMemory.symbolsMap.clear();
     for (const s of domains.symbols ?? []) {
-      this.collectiveMemory.symbolsMap.set(s.meaningKey, s);
+      this.collectiveMemory.symbolsMap.set(s.meaningKey, structuredClone(s));
     }
+    this.collectiveMemory.totalExperiencesRecorded =
+      domains.meta.totalExperiencesRecorded ?? this.collectiveMemory.experiences.length;
+    this.collectiveMemory.totalExperiencesReplayed =
+      domains.meta.totalExperiencesReplayed ?? 0;
+    this.collectiveMemory.totalKnowledgeExchanges =
+      domains.meta.totalKnowledgeExchanges ?? 0;
 
     this.generationsMap.clear();
     for (const g of domains.generations ?? []) {
-      this.generationsMap.set(g.generation, g);
+      this.generationsMap.set(g.generation, structuredClone(g));
     }
-    this.events = domains.eventLogs ?? [];
-    this.timeline = domains.timeline ?? [];
-    this.extinctionRecords = domains.extinctionRecords ?? [];
-    this.recoveryEvents = domains.recoveryEvents ?? [];
-    this.preservedRevivalPool = domains.preservedRevivalPool ?? [];
-    this.history = domains.history ?? [];
 
-    const m = domains.meta;
-    this.currentGeneration = m.currentGeneration;
-    this.recoveryPolicy = m.recoveryPolicy;
-    this.serialCounter = m.serialCounter;
-    this.birthsCount = m.birthsCount;
-    this.deathsCount = m.deathsCount;
-    this.restoredBrainsCount = m.restoredBrainsCount;
-    this.observationalLearnings = m.observationalLearnings;
-    this.consecutiveFailedRecoveries = m.consecutiveFailedRecoveries;
-    this.lastRecoveryAttemptTick = m.lastRecoveryAttemptTick;
-    this.milestoneFlags = m.milestoneFlags ?? {};
-    this.collectiveMemory.totalExperiencesRecorded = m.totalExperiencesRecorded ?? 0;
-    this.collectiveMemory.totalExperiencesReplayed = m.totalExperiencesReplayed ?? 0;
-    this.collectiveMemory.totalKnowledgeExchanges = m.totalKnowledgeExchanges ?? 0;
-    this.speedMultiplier = m.speedMultiplier ?? 1;
-    this.elapsedRealSeconds = m.elapsedRealSeconds ?? 0;
+    this.events = structuredClone(domains.eventLogs ?? []);
+    this.timeline = structuredClone(domains.timeline ?? []);
+    this.extinctionRecords = structuredClone(domains.extinctionRecords ?? []);
+    this.recoveryEvents = structuredClone(domains.recoveryEvents ?? []);
+    this.preservedRevivalPool = structuredClone(domains.preservedRevivalPool ?? []);
+    for (const p of this.preservedRevivalPool) {
+      ensureBrainOptimizerBuffers(p.brain);
+    }
+    this.history = structuredClone(domains.history ?? []);
+    if (domains.trainingState) {
+      this.trainingState = structuredClone(domains.trainingState);
+    }
+
+    this.currentGeneration = domains.meta.currentGeneration ?? 1;
+    this.recoveryPolicy = domains.meta.recoveryPolicy ?? 'spawn_new_generation';
+    this.serialCounter = domains.meta.serialCounter ?? this.agents.length;
+    this.birthsCount = domains.meta.birthsCount ?? 0;
+    this.deathsCount = domains.meta.deathsCount ?? 0;
+    this.restoredBrainsCount = domains.meta.restoredBrainsCount ?? 0;
+    this.observationalLearnings = domains.meta.observationalLearnings ?? 0;
+    this.consecutiveFailedRecoveries = domains.meta.consecutiveFailedRecoveries ?? 0;
+    this.lastRecoveryAttemptTick = domains.meta.lastRecoveryAttemptTick ?? -100;
+    this.milestoneFlags = structuredClone(domains.meta.milestoneFlags ?? {});
+    if (domains.meta.causesOfDeathTotals) {
+      this.causesOfDeathTotals = structuredClone(domains.meta.causesOfDeathTotals);
+    } else {
+      const rebuilt: Record<string, number> = {};
+      for (const a of this.agents) {
+        if (!a.alive && a.causeOfDeath) {
+          rebuilt[a.causeOfDeath] = (rebuilt[a.causeOfDeath] ?? 0) + 1;
+        }
+      }
+      this.causesOfDeathTotals = rebuilt;
+    }
+    this.speedMultiplier = domains.meta.speedMultiplier ?? 1;
+    this.elapsedRealSeconds = domains.meta.elapsedRealSeconds ?? 0;
+    this.pendingRecoveryAtTick = null;
   }
-
-  public getAgentDetail(agentId: string): AgentState | undefined {
-    return this.agents.find((a) => a.identity.id === agentId);
-  }
-
-  public getGenerationDetail(generation: number): {
-    summary: GenerationSummary | undefined;
-    agents: AgentSummaryView[];
-    discoveries: ReturnType<CollectiveMemorySystem['getKnowledgeArray']>;
-  } {
-    const summary = this.generationsMap.get(generation);
-    const snap = this.buildTelemetrySnapshot();
-    return {
-      summary,
-      agents: snap.agents.filter((a) => a.generation === generation),
-      discoveries: snap.knowledgeItems.filter((k) => k.discovererGeneration === generation),
-    };
-  }
-}
-
-export function computePayloadSha256(data: unknown): string {
-  return crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
 }

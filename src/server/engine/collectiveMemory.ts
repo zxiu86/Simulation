@@ -28,7 +28,6 @@ export class CollectiveMemorySystem {
   } {
     this.totalExperiencesRecorded += 1;
 
-    // Update or create aggregated civilization knowledge item for this entityKey
     let knowledge = this.knowledgeMap.get(exp.entityKey);
     let isNewDiscovery = false;
 
@@ -79,14 +78,11 @@ export class CollectiveMemorySystem {
     knowledge.lastTestedTick = exp.simTimeTick;
     knowledge.summaryAr = exp.immediateOutcome;
 
-    // Statistical reliability & uncertainty: single trial != absolute truth!
-    // Sample-size factor grows smoothly with trials & independent experimenters.
     const successRatio = knowledge.successCount / Math.max(1, knowledge.totalTrials);
     const sampleWeight = Math.min(1, knowledge.totalTrials / 8);
     const diversityWeight = Math.min(1, knowledge.uniqueExperimenters / 4);
     const evidenceStrength = 0.5 * sampleWeight + 0.5 * diversityWeight;
 
-    // Posterior confidence centered at 0.5 when sample size is small
     knowledge.confidence = Number(
       (0.5 * (1 - evidenceStrength) + successRatio * evidenceStrength).toFixed(3),
     );
@@ -102,7 +98,6 @@ export class CollectiveMemorySystem {
 
     this.experiences.push(fullRecord);
     if (this.experiences.length > MAX_EXPERIENCES_IN_MEMORY) {
-      // Compact low-surprise middle records while keeping diverse & high-impact experiences
       this.compactExperiences();
     }
 
@@ -178,16 +173,17 @@ export class CollectiveMemorySystem {
     };
   }
 
-  public samplePrioritizedReplayBatch(batchSize: number): CollectiveExperienceRecord[] {
+  public samplePrioritizedReplayBatch(
+    batchSize: number,
+    rngFn: () => number = Math.random,
+  ): CollectiveExperienceRecord[] {
     if (this.experiences.length === 0) return [];
-    const startTime = performance.now();
     const sampled: CollectiveExperienceRecord[] = [];
     const len = this.experiences.length;
 
-    // Prioritized sampling: bias toward high |reward| or high damages (high surprise/value)
     for (let i = 0; i < batchSize; i++) {
-      const idxA = Math.floor(Math.random() * len);
-      const idxB = Math.floor(Math.random() * len);
+      const idxA = Math.floor(rngFn() * len);
+      const idxB = Math.floor(rngFn() * len);
       const a = this.experiences[idxA];
       const b = this.experiences[idxB];
       const prioA = Math.abs(a.reward) + a.damages * 0.2 + (a.delayedOutcomes.length > 0 ? 1 : 0);
@@ -196,7 +192,6 @@ export class CollectiveMemorySystem {
     }
 
     this.totalExperiencesReplayed += sampled.length;
-    void startTime;
     return sampled;
   }
 
@@ -289,7 +284,6 @@ export class CollectiveMemorySystem {
   }
 
   private compactExperiences(): void {
-    // Keep most recent 1500 + top 750 highest-magnitude experiences
     const recent = this.experiences.slice(-1500);
     const older = this.experiences.slice(0, -1500);
     older.sort(
